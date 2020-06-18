@@ -1,3 +1,3 @@
 # Modeling Subjective Assessments of Guilt in Newspaper Crime Narratives
 
-This is the GitHub repository for our paper "Modeling Subjective Assessments of Guilt in Newspaper Crime Narratives". We are working on making all of our data and sources publicly available until end of July 2020. If you're interested in our SuspectGuilt corpus, feel free to send an email to ekreiss@stanford.edu and we will be happy to share our resources with you.
+This is the GitHub repository for our paper ["Modeling Subjective Assessments of Guilt in Newspaper Crime Narratives"](https://arxiv.org/abs/2006.09589). We are working on making all of our data and sources publicly available until end of July 2020. If you're interested in our SuspectGuilt corpus, feel free to send an email to ekreiss@stanford.edu or zijwang@stanford.edu and we will be happy to share our resources with you.
