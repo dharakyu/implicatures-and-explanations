@@ -44,9 +44,12 @@ for an example of running Integrated Gradients on our dataset using [captum](htt
 
 ```
 @inproceedings{kreiss2020modeling,
-  title={Modeling subjective assessments of guilt in newspaper crime narratives},
+  title={Modeling Subjective Assessments of Guilt in Newspaper Crime Narratives},
   author={Kreiss, Elisa and Wang, Zijian and Potts, Christopher},
   booktitle={Proceedings of the 24th Conference on Computational Natural Language Learning (CoNLL)},
-  year={2020}
+  year={2020},
+  url={https://www.aclweb.org/anthology/2020.conll-1.5},
+  pages = {56--68},
+  publisher = {Association for Computational Linguistics},
 }
 ```
