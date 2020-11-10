@@ -1,0 +1,2683 @@
+---
+title: "SuspectGuilt Corpus Analysis"
+output: rmarkdown::github_document  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(cowplot)
+library(tidyverse)
+library(here)
+
+theme_set(theme_cowplot())
+theme_set(theme_bw(18))
+
+col_author_belief = "#603f5a"
+col_susp_comCrime = "#f5a337"
+
+col_high_rating = "#9ed492"
+col_low_rating = "#4a8358"
+  
+col_unified = "#aaaaaa"
+
+col_author_high = "#9ed492"
+col_author_low = "#4a8358"
+
+col_susp_high = "#9ed492"
+col_susp_low = "#4a8358"
+
+# col_author_high = "#9f8b9c"
+# col_author_low = "#432c3e"
+# 
+# col_susp_high = "#f9c787"
+# col_susp_low = "#ab7226"
+```
+
+[1. Experimental setup](#experimental-setup)
+
+[2. Annotator pool and exclusions](#annotator-pool-and-exclusions)
+
+[3. Data postprocessing and exclusions](#data-postprocessing-and-exclusions)
+
+[4. Raw corpus data overview](#raw-corpus-data-overview)
+
+[5. Annotation analysis](#annotation-analysis)
+
+[6. Model: Token importance analysis](#model-token-importance-analysis)
+
+```{r import data, include=FALSE}
+
+df_import = read_csv(here("data","02_main","raw_annotation_data.csv")) %>%
+  # exclude test
+  filter(is.na(comments) | !str_detect(comments,"TEST"))
+
+# 15 trials per submission
+nrow(df_import)/15
+# -> total number of submissions: 3463 submissions
+length(unique(df_import$anon_worker_id))
+# -> total number of annotators: 2818
+
+```
+
+```{r botresponse, include=FALSE}
+# check whether everyone entered a response into the textfield and no one cheated over js console
+ggplot(distinct(df_import, anon_worker_id, botresponse),aes(x=str_to_lower(botresponse))) +
+  geom_histogram(stat="count")
+```
+
+# Experimental setup
+
+Try out the experiment yourself [here](https://elisakreiss.github.io/modeling_guilt/experiments/02_main/03_highlighting/index.html)!
+
+2818 annotators contributed to 3463 submissions on Amazon's Mechanical Turk. The approximated time for completion was 15 minutes and each participant was paid $2.50. We restricted participation to IP addresses within the US and an approval rate higher than 97%. Participants were asked to read 5 stories and respond to three questions about them:
+
+1. Reader perception about guilt: "How likely is it that the main suspect is / the main suspects are guilty?"
+2. Author belief about guilt: "How much does the author believe that the main suspect is / the main suspects are guilty?"
+3. Attention check question, such as "How likely is it that this story contains more than five words?"
+
+Responses were collected on a continuous slider, underlyingly coded as ranging from 0 (very unlikely) to 1 (very likely). After submitting the slider response for each question, they were asked to "highlight in the text why [they] gave [their] response". 
+
+![Study design](graphs/design.png)
+
+# Annotator pool and exclusions
+
+```{r responses to postquestionnaire, eval=FALSE, fig.height=1.5, fig.width=4, include=FALSE}
+# check responses to post questionnaire, which participants I need to exclude (e.g., HitCorrect and NativeLanguage)
+df_hitcorrect = df_import %>% 
+  mutate_at(vars(HitCorrect),
+            funs(ifelse(HitCorrect==0,"no",
+                        ifelse(HitCorrect==404,"confused","yes"))))
+
+ggplot(df_hitcorrect,aes(x=HitCorrect)) +
+  geom_bar(width = .5,
+           fill = "orange") +
+  xlab("did you do the hit correctly")
+
+# languages
+unique(df_import$languages)
+
+# comments
+unique(df_import$comments)
+```
+
+<!-- ## Exclusions -->
+
+We excluded participants who indicated that they did the Hit incorrectly or were confused (544), who indicated that they had a native language other than English (71), who spent less than 3.5 minutes on the task (53) and who gave more than 2 out of 5 erroneous responses in the control questions (359). A response is considered erroneous when a clearly true or false question incorrectly received a slider value below or above 50 (the center of the scale) respectively. Additionally, we excluded 120 annotations because annotators had seen this story in a previous submission. Overall, we excluded 1035 submissions + 120 annotations (15405 annotations out of 51945, resulting in 36420 annotations).
+
+
+```{r participant exclusion, message=FALSE, include=FALSE}
+
+# to identify multiple submissions
+# table(df_import$anon_worker_id)
+# mult_subm = df_import %>% 
+#   group_by(anon_worker_id) %>% 
+#   summarize(all_trials = n()) %>% 
+#   ungroup() %>% 
+#   filter(all_trials > 15)
+# 
+# mult_subm_list = as.list(mult_subm['anon_worker_id'])$anon_worker_id
+
+df_control = df_import %>% 
+  filter(str_detect(trial_type, "control")) %>% 
+  select(trial_type, question, slider_val, box_checked, story_comments, anon_worker_id) %>% 
+  mutate(passed = ifelse(
+    (box_checked) |
+      (trial_type == "control1_false" & slider_val < 50) |
+      (trial_type == "control2_false" & slider_val < 50) |
+      (trial_type == "control3_true" & slider_val > 50),
+    T, F
+  ))
+
+# view(df_control)
+
+df_failed = df_control %>% 
+  filter(!passed)
+
+# table(df_failed$anon_worker_id)
+
+failed_control = df_failed %>% 
+  group_by(anon_worker_id) %>% 
+  summarize(failed_attempts = n()) %>% 
+  ungroup() %>% 
+  filter(failed_attempts > 2)
+
+failed_control_list = as.list(failed_control['anon_worker_id'])$anon_worker_id
+
+# popular spellings of "english"
+engl_spellings = c("english|englis|eng|engilsh|englsh|en|engliah|englis|englsig|english language|enghlish|enlgish|engllish|englih|englsih|englisj|engliish|engrish|enligh|engllish|ebglish|engliosh")
+
+# get number of remaining submissions
+# length(df_clean$anon_worker_id)/15
+
+# Exclusions
+df_clean = df_import %>% 
+  rename(story_in_exp = story_id) %>% 
+  mutate(story_id = group_indices(., story)) %>% 
+  # original submissions: 3463
+  # 1) if hit was reportedly done incorrectly or annotator was confused
+  filter(HitCorrect==1) %>%
+  # 2919
+  # 2) if native language is not english
+  mutate_at(vars(languages), funs(str_to_lower(.))) %>% 
+  filter(str_detect(languages, engl_spellings)) %>% 
+  # 2848
+  filter(timeSpent > 3.5) %>% 
+  # 2795
+  # 3) failed attention check
+  filter(!(anon_worker_id %in% failed_control_list)) %>% 
+  # 2436
+  # 4) exclude duplicate trials done by one participant
+  arrange(endTime) %>%
+  distinct(story_id, trial_type, anon_worker_id, .keep_all = TRUE) %>%
+  # 2428 (excluded 120 annotations)
+  # update story_id
+  mutate(story_id = group_indices(., story))
+  
+
+# number of submissions before exclusion (3463)
+nrow(df_import)/15
+# number of submissions after exclusion (2428) 
+# -- this is only a rough estimate since I didn't only exclude whole submissions
+nrow(df_clean)/15
+# number of critical annotations before exclusion (34630)
+nrow(df_import[df_import$trial_type=="author_belief" | df_import$trial_type=="suspect_committedCrime",])
+# number of critical annotations after exclusion (24256)
+nrow(df_clean[df_clean$trial_type=="author_belief" | df_clean$trial_type=="suspect_committedCrime",])
+# number of stories (1883)
+nrow(distinct(df_clean,story_id))
+# number of workers (2022)
+nrow(distinct(df_clean,anon_worker_id))
+```
+
+1791 workers (89%) only participated once (i.e., they read 5 stories and submitted 15 annotations in total), making up 74% of all annotations. Only 3% of all annotations are submitted by workers who participated more than two times. 
+
+```{r annotator distribution, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# 2818  
+length(unique(df_import$anon_worker_id))
+
+# 2022 workers overall
+length(unique(df_clean$anon_worker_id))
+
+df_anndistr =df_clean %>%
+  group_by(anon_worker_id) %>%
+  summarize(trials=n()) %>%
+  ungroup()
+
+table(df_anndistr$trials)
+
+```
+
+
+<!-- ## About the participants (after exclusion) -->
+
+The average age of annotators was 36 (note the slightly artificial concentration at 30, 35, 45 and 50) with a slightly higher proportion of male over female participants. The median time annotators spent on the study was 15.2 minutes, which is in line with our original time estimates. Overall, annotators indicated that they enjoyed the study. 
+
+```{r subj, echo=FALSE, fig.height=7, fig.width=14, message=FALSE, warning=FALSE}
+
+df_subj = df_clean %>% 
+  select(age,gender,enjoyment,timeSpent,anon_worker_id) %>% 
+  distinct() %>% 
+  mutate_at(vars(age), funs(as.integer(.))) %>%
+  filter(age < 110) %>% 
+  mutate_at(vars(enjoyment), 
+            funs(case_when(
+              .==0 ~ "worse than\naverage",
+              .==1 ~ "average",
+              .==2 ~ "better than\naverage",
+              TRUE ~ "NA"
+            ))) %>% 
+  mutate_at(vars(enjoyment), funs(fct_relevel(.,"better than\naverage", "average", "worse than\naverage")))
+
+mean_age = round(mean(df_subj$age),digits = 1)
+p_age = df_subj %>% 
+  distinct(anon_worker_id, .keep_all = TRUE) %>% 
+  ggplot(.,aes(x=age)) +
+  geom_bar(aes(y = stat(count)/sum(stat(count))),
+           fill = "#b2cdff",
+           color =  "black") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  geom_vline(xintercept= mean_age) +
+  scale_x_continuous(breaks=c(20,30,40,50,60,70,mean_age)) +
+  xlab("Age") +
+  theme(axis.title.y = element_blank())
+
+p_gen = ggplot(df_subj,aes(x=gender)) +
+  geom_bar(aes(y = stat(count)/sum(stat(count))),
+           width = 0.5,
+           fill = "#b2cdff",
+           color =  "black") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  xlab("Gender") +
+  theme(axis.title.y = element_blank())
+
+p_enj = ggplot(df_subj,aes(x=enjoyment)) +
+  geom_bar(aes(y = stat(count)/sum(stat(count))),
+           width = 0.5,
+           fill = "#b2cdff",
+           color =  "black") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  xlab("Enjoyment") +
+  theme(axis.title.y = element_blank())
+
+mean_time = round(mean(df_subj$timeSpent), digits = 1)
+median_time = round(median(df_subj$timeSpent), digits = 1)
+p_time = ggplot(df_subj,aes(x=timeSpent)) +
+  geom_histogram(aes(y = stat(count)/sum(stat(count))),
+                 fill="#b2cdff",
+                 color="black") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  xlab("Time spent (in minutes)") +
+  theme(axis.title.y = element_blank()) +
+  geom_vline(xintercept=mean_time) +
+  geom_vline(xintercept=median_time,linetype="dashed") +
+  scale_x_continuous(breaks=c(median_time,mean_time,floor(5),floor(10),floor(20),floor(30),floor(40),floor(50),floor(60))) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot_grid(p_age, p_gen, p_enj, p_time, labels = "AUTO", ncol = 2, align = 'v')
+
+# ggsave(here("writing", "2020_CoNLL", "img", "part-demogr.pdf"), width=10, height=7)
+
+```
+
+# Data postprocessing and exclusions
+
+```{r basic df, include=FALSE}
+df = df_clean %>% 
+  filter(trial_type == "author_belief" | trial_type == "suspect_committedCrime") %>%
+  select(box_checked, headline, trial_type, slider_val, highlighted, story_whighl, story, story_comments, trial_number, story_id, anon_worker_id, gender, age, enjoyment, timeSpent)
+  
+```
+
+## "Doesn't apply" selections
+
+In the study, annotators had the option to indicate that the question cannot be applied to the news story. Overall, participants rarely used that option, but more so for the question about the author's beliefs than the general guilt question. The amount of withheld responses is still fairly low at less than 11%.
+
+```{r box checked, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_main_box = df %>% 
+  mutate(bin_box = ifelse(box_checked, 1, 0)) %>% 
+  mutate_at(vars(trial_type), funs(case_when(
+    trial_type == "author_belief" ~ "Author belief",
+    trial_type == "suspect_committedCrime" ~ "Reader perception",
+    TRUE ~ "something went wrong"
+  ))) %>% 
+  mutate_at(vars(trial_type), funs(fct_relevel(., "Reader perception", "Author belief")))
+
+df_main_box %>%
+  ggplot(., aes(x=trial_type, y=bin_box, fill=trial_type)) +
+    stat_summary(fun.y = "mean", 
+                 geom = "bar",
+                 # size = 3,
+                 width=0.8,
+                 color="black") +
+    stat_summary(fun.data = "mean_cl_boot",
+                  geom = "errorbar",
+                  color = "black",
+                  size = .3,
+                  width = 0.3) +
+    xlab("Question type") +
+    ylab("Proportion of\n\"Doesn't apply\" selections") +
+    theme(legend.position = "none") +
+    scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+
+```
+
+
+If several annotators agree that a question cannot be answered in the context of one particular story, it might be an indication that this story is not suitable for the corpus. In the following graph, we show the different rates to which annotators selected "Doesn't apply" for each story. In the final corpus, we decided to exclude stories where this box was selected more than 30% of the time with that particular question. Further inspection showed that this mainly affected summary news articles which addressed multiple stories and suspects and therefore the questions could not be uniquely attributed to one specific case.
+
+```{r cutoff, echo=FALSE, fig.asp=0.618, fig.width=8, message=FALSE, warning=FALSE, out.width="60%", paged.print=FALSE}
+cut_off = df_clean %>% 
+  filter(!str_detect(trial_type, "control")) %>% 
+  mutate(box_checked_bin = ifelse(box_checked, 1, 0)) %>% 
+  group_by(story, trial_type) %>% 
+  summarize(unanswered_prop = mean(box_checked_bin),
+            n = n()) %>% 
+  ungroup() %>% 
+  mutate_at(vars(trial_type), funs(case_when(
+    trial_type == "author_belief" ~ "Author belief",
+    trial_type == "suspect_committedCrime" ~ "Reader perception",
+    TRUE ~ "something went wrong"
+  ))) %>% 
+  mutate_at(vars(trial_type), funs(fct_relevel(., "Reader perception", "Author belief")))
+
+# cut_off %>% 
+#   filter(trial_type == "author_belief") %>%
+#   ggplot(., aes(x=reorder(story, unanswered_prop), y=unanswered_prop)) +
+#     facet_wrap(~trial_type) +
+#     geom_point() +
+#     theme(axis.text.x = element_blank()) +
+#     xlab("story")
+
+cut_off %>% 
+ggplot(., aes(x=unanswered_prop, fill=trial_type)) +
+  facet_wrap(~trial_type) +
+  geom_histogram(aes(y = stat(density) * 0.1), 
+                 binwidth = 0.1,
+                 color="black") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_x_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+  xlab("Proportion of \"Doesn't apply\"\nselections for each story") +
+  ylab("Number of stories") +
+  theme(legend.position = "none") +
+  theme(strip.background = element_rect(fill="white"))
+```
+
+```{r clean highlights, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# correct for special characters that were in the stories or introduced through highlighting issues
+df_prep = df %>% 
+  mutate(cleaned = story_whighl) %>% 
+  mutate_at(vars(cleaned),funs(str_remove(., '<p class="story_text" id="story_text">'))) %>%
+  mutate_at(vars(cleaned),funs(str_remove(., ' </p>'))) %>% 
+  mutate_at(vars(cleaned),funs(str_remove(., '</p>'))) %>% 
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('&amp;nbsp;'), ' '))) %>%
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('&amp;'), ' '))) %>%
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('&dash;'), '-'))) %>%
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('&gt;'), ' '))) %>%
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('&nbsp;'), ' '))) %>%
+  mutate_at(vars(cleaned),funs(str_replace_all(., coll('\\n'), ' '))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(
+    headline == 'North Jersey Man Found With Child Pornography: Sheriff' |
+    headline == 'Police: Port Chester Man Steals SUV, Then Crashes It in Greenwich' |
+      headline == 'OC Man Charged with Hate Crime Attack on Black Teen and Older Brother' |
+      headline == "Providence Point Worker Charged with Stealing Resident's Checks",
+    str_replace_all(., '^ ', ''), .))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(
+    headline == "7-Year Old Girl Sexually Abused At Mokena Man's Home: Police" | 
+      headline == "Bowel Movement Search Warrant, Racist Rant: MA Crime" | 
+      headline == "Burlingame Police Help Bust Peninsula Burglary Ring" | 
+      headline == "Martinez Man, Accomplice Arrested After Attempted Theft From Hotel Garage: Police" | 
+      headline == "Naugatuck Police: Oxford Woman Stole Jewels and Coins, and Pawned the Items" |
+      headline == "Burlingame Man, 22, Arrested in SSF on Suspicion of Robbery, Hit-and-Run" |
+      headline == "Former Newton Daycare Worker Charged with Child Porn In Arlington - Again" |
+      headline == "Danbury Burglar Punched Homeowner During Break-In: Police" |
+      headline == "Encinitas Burglary, Credit Card Fraud Suspect Caught On Camera" |
+      headline == "Burglary, Credit Card Fraud Suspect Caught On Camera In San Diego" |
+      headline == "Armed Robbers Who Fired At Clerk Nabbed: Deputies" |
+      headline == "ATF Busts 2 For Class X Drug Felonies In Bolingbrook" |
+      headline == "Man Charged In Shorewood ID Theft Still Not in Will County" |
+      headline == "Ohio Undercover Sting Catches 16 Suspected Sexual Predators" |
+      headline == "Seymour Man Tries To Fight Several Men In Milford Bar's Parking Lot, Assaults Police Officer: Police" |
+      headline == "Arrest Made in Alleged Dragon Con Sexual Assault" |
+      headline == "She Showed Nude Photos To Minors: Complaint" |
+      headline == "Armed Robbers Victimize Teen, Lead Cops on Chase, Police Say" |
+      headline == "Armed Teens Accused of Recent Cleveland Heights Robberies Still At Large" |
+      headline == "Hermosa Crime: Smashing Pumpkins" |
+      headline == "Man Throws Pipe, Bites Cop's Hand In Traffic Stop: Police" |
+      headline == "Union County Man Charged With Murder Over Dice Game" |
+      headline == "Man Throws Pipe, Bites Cop's Hand In Traffic Stop: Police" |
+      headline == "Bridgeport Man Broke Into Vehicle, Arrested After Milford Neighbor Followed Him And Called Police: Police" |
+      headline == "Man Charged with DUI, Urinates and Defecates in Orange Police Holding Cell: Police" |
+      headline == "Trio Busted After Fraud Suspected At Peninsula Hotel" |
+      headline == "Armed Robber Hits Buford-Area Bank", 
+    str_replace_all(., ' </span>$', '</span>'), .))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(
+    headline == "Police Arrest Suspect in Venice Vietnam War Memorial Wall Vandalism" |
+      headline == "Armed Teens Accused of Recent Cleveland Heights Robberies Still At Large" |
+      headline == "Hermosa Crime: Smashing Pumpkins" |
+      headline == "Man Throws Pipe, Bites Cop's Hand In Traffic Stop: Police", 
+    str_replace_all(., ' <span class="selectedText" title=""></span>$', '<span class="selectedText" title=""></span>'), .))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(
+    headline == "Man Throws Pipe, Bites Cop's Hand In Traffic Stop: Police", 
+    str_replace_all(., ' <span class="selectedText" title=""></span></span>$', '<span class="selectedText" title=""></span></span>'), .))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(headline == 'Man Assaults Women with a Belt, then a Vehicle, Deputies Allege', str_replace_all(., '<a href="//storify.com/9496333638/car-runs-into-two-women-in-weho" target="_blank">View the story "Car runs into two women in Weho" on Storify</a>', 'LINK'), .))) %>%
+  mutate_at(vars(cleaned), funs(ifelse(headline == 'Cops Seek Help with Early Morning Assault Investigation', str_replace_all(., '^  ', ' '), .))) %>%
+  mutate_at(vars(cleaned), funs(str_replace_all(., '<i class="chrome-extension-mutihighlight chrome-extension-mutihighlight-style-.">',""))) %>% 
+  mutate_at(vars(cleaned), funs(str_replace_all(., '<i class=&quot;chrome-extension-mutihighlight chrome-extension-mutihighlight-style-.&quot;>',""))) %>% 
+  mutate_at(vars(cleaned), funs(str_replace_all(., '</i>',""))) %>% 
+  # story_clean
+  mutate(story_clean = str_replace_all(story, coll('\\n'), ' ')) %>% 
+  mutate_at(vars(story_clean),funs(str_replace_all(., coll(' \\r \\r  On November 9, 2016, the HBPD Crime Task Force Unit conducted'), '      On November 9, 2016, the HBPD Crime Task Force Unit conducted'))) %>%
+  mutate_at(vars(story_clean), funs(ifelse(headline == 'Man Assaults Women with a Belt, then a Vehicle, Deputies Allege', str_replace_all(., '<a href="//storify.com/9496333638/car-runs-into-two-women-in-weho" target="_blank">View the story "Car runs into two women in Weho" on Storify</a>', 'LINK'), .))) %>%
+  mutate_at(vars(story_clean),funs(str_replace_all(., coll('&dash;'), '-'))) %>%
+  rowid_to_column("unique_identifier") 
+  
+# save to file to create binary representations
+# df_prep %>%
+#   select(cleaned, unique_identifier, story, story_clean) %>%
+#   write_csv(here("analyses","02_main","03_highlighting","data","preprocessed_data.csv")))
+```
+
+## Exclusions
+
+We filter all datapoints where a participant selected more than 95% of the text. This happened more often for the *Author belief* question (403 exclusions out of 12128 datapoints) than in the *Reader perception* question (67 exclusions out of 12128 datapoints) but still distributed over 1883 stories. We also exclude all question-story pairs where more than 30% of participants indicated that the question doesn't apply (see figure above). This leaves us with 1874 stories overall (1756 for *Author belief* and 1869 for *Reader perception*).
+
+```{r post highl analysis, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# load file with binary story representation (0: not highlighted, 1: highlighted)
+df_post_import = read_csv(here("analyses","02_main","03_highlighting","data","postprocessed_data.csv"))
+
+
+df_post = df_post_import %>%
+  select(Bin_data, unique_identifier) %>% 
+  left_join(df_prep, by="unique_identifier") %>% 
+  mutate(len_bindata = str_length(Bin_data)) %>% 
+  mutate(len_story = str_length(story_clean)) %>% 
+  mutate(same_length = ifelse(len_story == len_bindata, T, F)) %>% 
+  mutate(selections = str_count(Bin_data, "1")) %>% 
+  mutate(prop_selections = selections/len_bindata) %>% 
+  # filter out all data where more than 95% of the text was selected 
+  # before: author_belief & suspect_committedCrime 12128 data points (1883 stories)
+  # after: author_belief 11725 (-403); suspect_committedCrime 12061 (-67) data points; (still 1883 stories)
+  filter(prop_selections < 0.95) %>% 
+  rename(story_whighl_cleaned = cleaned) %>%
+  rename(annotation_id = anon_worker_id) %>%
+  mutate(box_checked_bin = ifelse(box_checked, 1, 0)) %>% 
+  group_by(story_id, trial_type) %>% 
+  mutate(unanswered_prop = mean(box_checked_bin),
+         nr_of_annotations = n()) %>%
+  ungroup() %>% 
+  # filter out all stories that have not been answered in 30% or more cases
+  # before: author_belief & suspect_committedCrime 1883 stories
+  # after: author_belief 1756 (-XXX); suspect_committedCrime 1869 (-XX) stories
+  # 1874 stories remain
+  filter(unanswered_prop <= 0.3) %>%
+  select(-box_checked_bin)
+
+# table(df_post$trial_type)
+# df_post %>%
+#   filter(trial_type == "author_belief") %>%
+#   # filter(trial_type == "suspect_committedCrime") %>%
+#   distinct(story_id) %>%
+#   nrow()
+
+# sanity check: do binary data and original story have the same length?
+# df_post %>%
+#   filter(!same_length) %>%
+#   view()
+
+```
+
+Finally, postanalysis revealed that the same articles were published under different headlines in different newspapers. If they were identical, those stories were merged with their duplicates, otherwise we kept the story with the most annotations. 53 stories were excluded due to duplicates, leaving us with 1821 stories overall (Reader perception: 1816; Author belief: 1705).
+
+The resulting data constitutes the **SuspectGuilt Corpus**.
+
+```{r find duplicates, include=FALSE}
+unique_stories = df_post %>%
+  group_by(story_id, story_clean, trial_type) %>% 
+  summarize(nr_of_annotations=n(),
+            mean_slider_val = mean(slider_val)) %>% 
+  distinct() %>%
+  ungroup() %>% 
+  filter(trial_type == "suspect_committedCrime") %>% 
+  select(-trial_type) %>% 
+  mutate_at(vars(story_id), funs(as.character(.)))
+
+duplicates = c('94 + 95', '146 + 147', '156 + 157', '220 + 334', '272 + 574', '297 + 298', '327 + 328', '351 + 1492', '407 + 408', '486 + 487', '503 + 504', '550 + 551', '610 + 704', '662 + 663', '684 + 685', '691 + 693', '750 + 751', '770 + 771', '786 + 1880', '806 + 807', '926 + 927', '943 + 1447', '964 + 1806', '967 + 968', '967 + 1352', '968 + 1352', '974 + 975', '977 + 1273', '984 + 985', '1058 + 1059', '1093 + 1094', '1109 + 1110', '1145 + 1146', '1149 + 1150', '1224 + 1544', '1227 + 1228', '1324 + 1325', '1343 + 1344', '1401 + 1402', '1427 + 1428', '1464 + 1867', '1511 + 1512', '1566 + 1567', '1692 + 1693', '1715 + 1716', '1719 + 1720', '1755 + 1756', '1789 + 1790', '1789 + 1791', '1789 + 1792', '1790 + 1791', '1790 + 1792', '1791 + 1792', '1844 + 1845', '1868 + 1869', '1872 + 1873', '1878 + 1879')
+
+df_duplicates = duplicates %>%
+  enframe(name = NULL) %>%
+  separate(value, c("dup1", "dup2"), sep=" \\+ ") %>% 
+  left_join(unique_stories, by = c("dup1" = "story_id")) %>% 
+  rename(dup1_story = story_clean,
+         dup1_slider = mean_slider_val,
+         dup1_ann = nr_of_annotations) %>% 
+  left_join(unique_stories, by = c("dup2" = "story_id")) %>% 
+  rename(dup2_story = story_clean,
+         dup2_slider = mean_slider_val,
+         dup2_ann = nr_of_annotations) %>% 
+  select(dup1, dup2, dup1_ann, dup2_ann, dup1_story, dup2_story) %>%
+  rowwise() %>% 
+  mutate(excluded = case_when(
+    dup1_ann < dup2_ann ~ dup1,
+    dup1_ann > dup2_ann ~ dup2,
+    dup1_ann == dup2_ann ~ c(dup1, dup2)[sample(1:2, 1)],
+    TRUE ~ "FIRE"
+  )) %>% 
+  select(-dup1_story, -dup2_story)
+
+duplicate_exclusions = as.list(unique(df_duplicates$excluded))
+
+# nrow(distinct(df_post,story_id))
+
+# 53 stories excluded due to duplicates (resulting in 1821 stories overall)
+# 1816 in suspect_committedCrime
+# 1705 in author_belief
+# df_post %>%
+#   filter(!(story_id %in% duplicate_exclusions)) %>%
+#   distinct(story_id, trial_type, .keep_all = TRUE) %>%
+#   select(story_id, story_clean, trial_type) %>%
+#   # filter(trial_type == "suspect_committedCrime") %>%
+#   filter(trial_type == "author_belief") %>%
+#   nrow()
+```
+
+
+```{r stories with less than 5 annotations, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# max_ids = df_post %>%
+#   group_by(story_id, trial_type) %>%
+#   summarize(nr_of_ratings =  n()) %>%
+#   ungroup() %>%
+#   filter((trial_type == "author_belief" | trial_type == "suspect_committedCrime") &
+#          nr_of_ratings <= 4) %>%
+#   distinct(story_id)
+# ids = str_c(max_ids$story_id, collapse="|")
+# ids = str_c("^(", ids, ")$", sep="")
+# max = df_post %>%
+#   filter(str_detect(story_id, ids)) %>%
+#   distinct(story_id, .keep_all = TRUE) %>%
+#   select(headline)
+# str_c(max$headline, collapse="#####")
+
+# table(max$story_id)
+```
+
+
+```{r write model data file, include=FALSE}
+
+df_model = df_post %>% 
+  filter(!(story_id %in% duplicate_exclusions)) %>%
+  # update story_id
+  mutate(story_id = group_indices(., story))
+
+# df_model  %>%
+#   select(box_checked, headline, trial_type, slider_val, story_clean, story_id, story_whighl_cleaned, Bin_data, annotation_id, unanswered_prop) %>%
+# write.table(file='model_data.tsv', quote=FALSE, sep='\t', col.names = NA)
+# 
+# df_model  %>%
+#   select(story_id, headline, story_clean, trial_type, box_checked, slider_val, story_whighl_cleaned, Bin_data, annotation_id, gender, age) %>%
+#   rename(story = "story_clean",
+#          question = "trial_type",
+#          doesnt_apply = "box_checked",
+#          rating = "slider_val",
+#          story_whighl = "story_whighl_cleaned",
+#          highlights_binary = "Bin_data",
+#          annotator_id = "annotation_id") %>%
+#   mutate_at(vars(question), funs(case_when(
+#     .=="suspect_committedCrime" ~ "reader_perception",
+#     TRUE ~ .
+#   ))) %>% 
+# write.table(file='data/SuspectGuilt_annotations.tsv', quote=FALSE, sep='\t', col.names = NA)
+```
+
+
+```{r create df for plotting, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+df_viz = df_model %>% 
+  filter(!box_checked) %>%
+  mutate_at(vars(trial_type), funs(case_when(
+    trial_type == "author_belief" ~ "Author belief",
+    trial_type == "suspect_committedCrime" ~ "Reader perception",
+    TRUE ~ "something went wrong"
+  ))) %>% 
+  mutate_at(vars(trial_type), funs(fct_relevel(., "Reader perception", "Author belief")))
+```
+
+# Raw corpus data overview
+
+The corpus comprises 1821 stories from local US-American newspapers.
+
+```{r nr of stories, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+max(df_viz$story_id)
+df_viz %>% 
+  distinct(story_id) %>% 
+  nrow()
+```
+
+<!-- #### Story length distributions -->
+
+Stories are between 59 and 309 words long (with 373 to 1822 characters; maximum character length is 1967 with 297 words). The average amount of words is 215 and the mean number of characters is 1300. From that we can estimate an average word length of 6 characters per word.
+
+```{r story length, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# df_viz %>% 
+#   distinct(story_id) %>% 
+#   nrow()
+
+df_len_dist = df_viz %>% 
+  select(story_id, story_clean) %>% 
+  distinct(story_id, story_clean) %>% 
+  mutate(char_len = str_length(story_clean)) %>% 
+  mutate(word_len = str_count(story_clean, boundary("word"))) %>% 
+  mutate(avg_chars_per_word = char_len / word_len)
+
+# - distribution of character lengths
+
+df_len_dist %>% 
+  ggplot(., aes(x=char_len)) +
+    geom_histogram(aes(y = stat(count)/sum(stat(count))),
+                   fill=col_unified,
+                   color="black") +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    xlab("Number of characters per story") +
+    ylab("Number of stories")
+
+# - distribution of number of words
+
+df_len_dist %>% 
+  ggplot(., aes(x=word_len)) +
+    geom_histogram(aes(y = stat(count)/sum(stat(count))),
+                   fill=col_unified,
+                   color="black") +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    xlab("Number of words per story") +
+    ylab("Number of stories")
+
+# mean(df_len_dist$word_len)
+# [1] 215.1631
+# mean(df_len_dist$char_len)
+# [1] 1300.664
+# mean(df_len_dist$avg_chars_per_word)
+# [1] 6.045959
+
+```
+
+# Annotation analysis
+
+## Data points per story and question type
+
+After exclusions, all stories have 4 or more annotations. These two graphs show the number of annotations per story for each question. This excludes cases where annotators indicated that the question doesn't apply.
+
+```{r data point distribution, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_viz %>% 
+  group_by(trial_type, story_id) %>% 
+  summarize(count = n()) %>% 
+  ungroup() %>%  
+  ggplot(., aes(x=count, fill=trial_type)) +
+    geom_bar(aes(y = stat(prop), color="black"), stat="count") + 
+    facet_wrap(~trial_type) +
+    scale_color_manual(values = c("black")) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+    xlab("Number of annotations per story") +
+    ylab("Number of stories") +
+    theme(legend.position = "none") +
+    xlim(c(0,25)) +
+    theme(strip.background = element_rect(fill="white"))
+  
+# blub = df_viz %>% 
+#   group_by(trial_type, story_id) %>% 
+#   summarize(count = n()) %>% 
+#   ungroup()
+#   
+# table(blub$trial_type,blub$count)
+# table(blub$trial_type)
+
+```
+
+## Slider rating distributions for each question
+
+Both distributions (for Reader perception and Author belief) are skewed towards the middle and maximum portions of the slider scale. Relatively few participants chose ratings in the “very unlikely” range. While Reader perception ratings are rather skewed to the maximum portion of the scale, Author belief responses are concentrated around the center. This suggests a disconnect between what readers believe about the suspect’s guilt more generally and what readers believe about the author’s beliefs. The cluster around the center also suggests that participants feel uncertainty, especially in the Author belief case.
+
+```{r rating distr per question, echo=FALSE, out.width = "50%", fig.width=8, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_viz %>%
+  ggplot(., aes(x=slider_val, col=trial_type)) +
+    geom_density(size=2) +
+    xlab("Slider rating") +
+    ylab("Density") +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Question types",
+                       labels = c("Reader perception" = "Reader\nperception", 
+                                  "Author belief" = "Author\nbelief"),
+                       values=c(col_susp_comCrime, col_author_belief))
+
+# ggsave(here("writing", "2020_CoNLL", "img", "slider-distr.pdf"), width=6.5, height=5)
+
+```
+
+## Correlation of questions for each story and annotator (intraannotator agreement per story)
+
+The left graph shows the correlation between the responses for Reader perception and Author belief for each individual worker and story. While we see clusters around the center and upper end of the scale, there is also a clear correlation (r=0.49).
+
+The graph on the right shows the actual distribution in slider rating difference between the two questions and the distribution if ratings were randomly shuffled. Since the maximum guilt rating was 100, the maximum difference between the two questions is 100 as well. At 0 we find the cases where an annotator gave the same rating to both questions for a particular story. Positive differences are cases where the Reader perception in guilt received a higher rating and vice versa. 
+Overall, the ratings show high agreement between questions, visible by the fact that most differences are around 0. This agreement is higher than predicted by a baseline where all slider ratings were shuffled.
+
+```{r correlation, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "50%", fig.width=7, fig.asp = 0.618}
+
+df_rating_corr = df_viz %>% 
+  select(trial_type, slider_val, annotation_id, story_id) %>% 
+  group_by(annotation_id, story_id) %>% 
+  spread(trial_type, slider_val) %>% 
+  ungroup()
+
+rating_corr = cor(df_rating_corr$`Reader perception`, 
+                  df_rating_corr$`Author belief`, 
+                  use="complete.obs")
+
+df_rating_corr %>% 
+  ggplot(., aes(x=`Reader perception`, y=`Author belief`)) +
+    geom_point(alpha=0.2) +
+    geom_smooth(method="lm")
+    # geom_text(x=20, 
+    #           y=90, 
+    #           label=str_c("r = ", round(rating_corr, 2)), 
+    #           color="blue",
+    #           size=6)
+
+df_viz %>%
+  select(trial_type, slider_val, annotation_id, story_id) %>%
+  group_by(annotation_id, story_id) %>%
+  spread(trial_type, slider_val) %>%
+  ungroup() %>%
+  mutate(shuffled_authorbelief = sample(`Author belief`, replace = FALSE)) %>%
+  mutate(shuffled_generalbelief = sample(`Reader perception`, replace = FALSE)) %>%
+  mutate(slider_diff = `Reader perception` - `Author belief`) %>%
+  mutate(shuffled_slider_diff = shuffled_generalbelief - shuffled_authorbelief) %>%
+  gather(condition, value, slider_diff, shuffled_slider_diff) %>%
+  ggplot(., aes(x=value, color=condition, fill=condition)) +
+    # facet_wrap(~condition) +
+    # geom_density() +
+    geom_histogram(color="#e9ecef", alpha=0.4, position = 'identity') +
+    # scale_fill_manual(values=c("#404080", "#69b3a2")) +
+    # geom_histogram(aes(y = stat(density) * 10),
+    #              binwidth = 10,
+    #              color="black") +
+    theme(legend.position = "top") +
+    scale_fill_manual(name = "Ratings",
+                       labels = c("shuffled_slider_diff" = "shuffled", "slider_diff" = "original"),
+                       values = c("#69b3a2", "#404080")) +
+    xlab("Rating difference between questions\nper annotator and story") +
+    ylab("")
+
+```
+
+
+## Slider rating distributions across annotators
+
+There generally do not seem to be differences in ratings dependent on gender or age of the participants and also not the time spent or self-reported enjoyment. Most variance show the *other* and *NA* categories but they also have the least amount of data.
+
+```{r pers info responses, echo=FALSE, out.width = "100%", fig.width=13, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+p_gender_slider = df_viz %>%
+  mutate_at(vars(gender), funs(ifelse(is.na(.), "NA", .))) %>% 
+  mutate_at(vars(gender), funs(fct_relevel(., c('female','male','other')))) %>% 
+  ggplot(., aes(x=slider_val, col=gender)) +
+    geom_density() +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Gender",
+                       values = c("#66545e", "#aa6f73", "#f6e0b5", "#f3c2b1")) +
+    xlab("Slider rating")
+
+p_enj_slider = df_viz %>%
+  mutate_at(vars(enjoyment), funs(as.character(.))) %>% 
+  mutate_at(vars(enjoyment), funs(ifelse(is.na(.), "NA", .))) %>% 
+  ggplot(., aes(x=slider_val, col=enjoyment)) +
+    geom_density() +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Enjoyment",
+                       labels = c("0" = "not at all",
+                                  "1" = "average",
+                                  "2" = "great",
+                                  "NA" = "NA"),
+                       values = c("#03396c", "#005b96", "#6497b1", "#b3cde0")) +
+    xlab("Slider rating")
+
+p_age_slider = df_viz %>%
+  mutate(age_bin = case_when(
+    age < 25 ~ "< 25",
+    age >= 25  & age < 35 ~ "25 - 34",
+    age >= 35  & age < 45 ~ "35 - 44",
+    age >= 45  & age < 55 ~ "45 - 54",
+    age >= 55  & age < 65 ~ "55 - 64",
+    TRUE ~ ">= 65"
+  )) %>% 
+  mutate_at(vars(age_bin), funs(fct_relevel(., c("< 25","25 - 34","35 - 44","45 - 54","55 - 64",">= 65")))) %>% 
+  ggplot(., aes(x=slider_val, col=age_bin)) +
+    geom_density() +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Age",
+                       values = c("#b2d8d8", "#66b2b2", "#008080", "#006666", "#004c4c", "#003535")) +
+    xlab("Slider rating")
+
+p_time_slider = df_viz %>%
+  mutate(time_bin = case_when(
+    timeSpent < 10 ~ "< 10",
+    timeSpent >= 10  & timeSpent < 15 ~ "10 - 14",
+    timeSpent >= 15  & timeSpent < 25 ~ "15 - 24",
+    TRUE ~ ">= 25"
+  )) %>% 
+  mutate_at(vars(time_bin), funs(fct_relevel(., c("< 10","10 - 14","15 - 24",">= 25")))) %>% 
+  ggplot(., aes(x=slider_val, col=time_bin)) +
+    geom_density() +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Time Spent",
+                       values = c("#8dc1ab", "#54a281", "#2d6a50", "#1a3c2e")) +
+    xlab("Slider rating")
+
+plot_grid(p_age_slider, p_gender_slider, p_enj_slider, p_time_slider, labels = "AUTO", ncol = 2, align = 'v')
+
+```
+
+
+## Interannotator agreement for slider values
+
+Overall, ratings for Reader perception in guilt were higher than for the author's belief in guilt, which is far bigger than the error bars on each of these questions. The mean squared error for each story is slightly higher for the author's belief in guilt (MSE = 0.0410) than the Reader perception in guilt (MSE = 0.0313), indicating that there was less agreement between annotators on the belief of the author. This suggests that this task is harder.
+
+To determine whether the annotations are meaningful for their respective stories, we compare the MSE of the actual data to the MSE of their shuffled counterparts. According to a Welch Two Sample t-Test, the MSE of the actual data is significantly smaller than the one of the randomly sampled distribution. This is true for both question types, suggesting that there is a signal in the data that drove participants' judgments.
+
+```{r interannotator slider, echo=FALSE, out.width = "60%", fig.width=10.25, fig.asp = 0.6, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_viz %>%
+  select(slider_val, trial_type, story_id) %>% 
+  mutate_at(vars(slider_val), funs(./100)) %>%
+  group_by(trial_type) %>%
+  mutate(shuffled_sliderval = sample(slider_val, replace = FALSE)) %>% 
+  gather(slider_cond, value, slider_val, shuffled_sliderval) %>% 
+  ungroup() %>% 
+  group_by(trial_type, slider_cond, story_id) %>% 
+  mutate(slider_mean = mean(value)) %>%
+  ungroup() %>%
+  mutate(error = (value - slider_mean)^2) %>%
+  mutate(condition = str_c(trial_type, slider_cond, sep = ":")) %>% 
+  mutate_at(vars(condition), funs(fct_relevel(., "Reader perception:slider_val", 
+                                              "Reader perception:shuffled_sliderval", 
+                                              "Author belief:slider_val", 
+                                              "Author belief:shuffled_sliderval"))) %>% 
+  ggplot(., aes(x=error, color=condition)) +
+    # facet_wrap(~slider_cond) +
+    geom_density(size=2) +
+    theme(legend.position = "top") +
+    xlab("Mean squared error") +
+    xlim(c(0,0.2)) +
+    scale_color_manual(name="Ratings",
+                       labels=c(
+                         "Author belief:shuffled_sliderval" = "Author belief:\nshuffled",
+                         "Author belief:slider_val" = "Author belief:\noriginal",
+                         "Reader perception:shuffled_sliderval" = "Reader perception:\nshuffled",
+                         "Reader perception:slider_val" = "Reader perception:\noriginal"
+                         ),
+                       values=c(col_susp_comCrime, "#fbdaaf", col_author_belief, "#af9fac"))
+
+# df_viz %>%
+#   select(slider_val, trial_type, story_id) %>% 
+#   mutate_at(vars(slider_val), funs(./100)) %>%
+#   group_by(trial_type) %>%
+#   mutate(shuffled_sliderval = sample(slider_val, replace = FALSE)) %>% 
+#   gather(slider_cond, value, slider_val, shuffled_sliderval) %>% 
+#   ungroup() %>% 
+#   group_by(trial_type, slider_cond, story_id) %>% 
+#   mutate(slider_mean = mean(value)) %>%
+#   ungroup() %>%
+#   mutate(error = value - slider_mean) %>%
+#   mutate(condition = str_c(trial_type, slider_cond, sep = ": ")) %>% 
+#   ggplot(., aes(x=error, color=condition)) +
+#     # facet_wrap(~slider_cond) +
+#     geom_density() +
+#     theme(legend.position = "top") +
+#     xlab("Mean error distribution")
+#     # scale_color_manual(values=c(col_susp_comCrime, col_author_belief))
+
+# df_viz %>%
+#   select(slider_val, trial_type, story_id) %>% 
+#   mutate_at(vars(slider_val), funs(./100)) %>%
+#   group_by(trial_type) %>%
+#   mutate(shuffled_sliderval = sample(slider_val, replace = FALSE)) %>% 
+#   gather(slider_cond, value, slider_val, shuffled_sliderval) %>% 
+#   ungroup() %>% 
+#   group_by(trial_type, slider_cond, story_id) %>% 
+#   mutate(slider_mean = mean(value)) %>%
+#   ungroup() %>%
+#   mutate(condition = str_c(trial_type, slider_cond, sep = ": ")) %>% 
+#   group_by(condition) %>% 
+#   summarize(mse = mean((value - slider_mean)^2)) %>% 
+#   ungroup()
+
+# test = df_viz %>%
+#   select(slider_val, trial_type, story_id) %>% 
+#   mutate_at(vars(slider_val), funs(./100)) %>%
+#   group_by(trial_type) %>%
+#   mutate(shuffled_slider_val = sample(slider_val, replace = FALSE)) %>% 
+#   ungroup() %>% 
+#   group_by(trial_type, story_id) %>% 
+#   mutate(real_slider_mean = mean(slider_val)) %>%
+#   mutate(shuffled_slider_mean = mean(shuffled_slider_val)) %>%
+#   ungroup() %>%
+#   mutate(real_error = abs(real_slider_mean - slider_val)) %>% 
+#   mutate(shuffled_error = abs(shuffled_slider_mean - shuffled_slider_val)) %>% 
+#   mutate(mse_diff = real_error^2 - shuffled_error^2)
+
+# error is significantly smaller
+# t.test(test[test$trial_type=="Reader perception",]$real_error,test[test$trial_type=="Reader perception",]$shuffled_error)
+# t.test(test[test$trial_type=="Author belief",]$real_error,test[test$trial_type=="Author belief",]$shuffled_error)
+
+```
+
+
+## Amount of separate highlights 
+
+Participants mainly highlighted one passage in a story and rarely set more than 8 separate highlights (full range: 1 to 45). The plot is collapsed to the most relevant range and it also counts multiple selections of the same characters. This pattern is consistent for both question types. 
+
+
+```{r nr sep highl, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# df_viz %>%
+#   mutate(num_highl = str_count(highlighted, "\\|\\|\\|")) %>%
+#   select(highlighted, num_highl, story_whighl_cleaned, selections) %>%
+#   view()
+
+df_viz %>% 
+  mutate(num_highl = str_count(highlighted, "\\|\\|\\|")) %>% 
+  filter(num_highl < 12) %>%  
+  ggplot(., aes(x=as.factor(num_highl))) +
+    geom_bar(aes(y = stat(count)/sum(stat(count))),
+                   fill = col_unified,
+                   color = "black") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    xlab("Number of highlights per trial") +
+    ylab("Number of trials")
+  
+```
+
+## Length of highlights
+
+Participants primarily marked passages shorter than 200 characters (which translates to approximately 33 words in this dataset). The Author belief question highlights tended to be shorter than the ones about Reader perception. Overall, highlights had a length between 1 and 1750 characters (ca. 292 words). This possibly suggests that the highlights for Reader perception were more contentful (i.e., chunks of meaning that can't be expressed in a single word) than for Author belief, where phrase-level meaning appears to become less relevant.
+
+Note that a highlight here is defined as a consecutive mark without a non-highlighted character in between. If a participant highlighted two passages that are directly connected, they will count as one highlighting. 
+
+```{r highl length, echo=FALSE, fig.asp=0.618, fig.width=6, message=FALSE, warning=FALSE, out.width="50%", paged.print=FALSE}
+
+df_highl_len = df_viz %>% 
+  # select(Bin_data, trial_type) %>%
+  select(Bin_data, trial_type, story_whighl) %>%
+  mutate(highl_strings = str_extract_all(Bin_data, "1+")) %>%  
+  rowwise() %>%
+  mutate(highl_lens = str_c(str_length(highl_strings), collapse = "|||")) %>% 
+  # add trial type before string for subsequent analysis
+  mutate_at(vars(highl_lens), funs(str_c(trial_type, highl_lens, sep="|||")))
+
+df_extract_len = str_split_fixed(df_highl_len$highl_lens, "\\|\\|\\|", n=20) %>% 
+  as_tibble(.) %>% 
+  rename(trial_type=V1) %>% 
+  gather(column, value, -trial_type) %>% 
+  filter(value!="") %>% 
+  mutate_at(vars(value), funs(as.numeric(.)))
+
+df_extract_len %>% 
+  mutate_at(vars(trial_type), funs(fct_relevel(., c("Reader perception")))) %>% 
+  ggplot(., aes(x=value, color=trial_type, fill=trial_type)) +
+    # geom_density() +
+    geom_histogram(binwidth=20, color="#e9ecef", alpha=0.5, position = 'identity') +
+    theme(legend.position = "top") +
+    coord_cartesian(xlim=c(0, 750)) +
+    xlab("Number of characters highlighted") +
+    scale_fill_manual(name = "Question types",
+                       labels = c("Reader perception" = "Reader\nperception", 
+                                  "Author belief" = "Author\nbelief"),
+                       values=c(col_susp_comCrime, col_author_belief))
+
+# mean(df_extract_len$value)
+# [1] 128.3141
+# mean(df_extract_len[df_extract_len$trial_type == "Reader perception",]$value)
+# [1] 138.0001
+# mean(df_extract_len[df_extract_len$trial_type == "Author belief",]$value)
+# [1] 117.3537
+
+# average word length (= 6) is computed in story length distribution code
+  
+```
+
+## Proportion of text highlighted
+
+Overall, participants highlighted less than half of the text for each question. In a majority of cases 10-15% of the stories were marked.
+
+```{r highl prop, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+ggplot(df_viz, aes(x=prop_selections, color=trial_type, fill=trial_type)) +
+  # geom_density() +
+  geom_histogram(bins=40, color="#e9ecef", alpha=0.5, position = 'identity') +
+  theme(legend.position = "top") +
+  xlab("Proportion of text highlighted") +
+  scale_fill_manual(name = "Question types",
+                     labels = c("Reader perception" = "Reader\nperception", 
+                                "Author belief" = "Author\nbelief"),
+                     values=c(col_susp_comCrime, col_author_belief))
+```
+
+
+## Highlighting position bias
+
+For the Reader perception question, annotators often identified the relevant information in the later half of the story. For the Author belief question, the highlights are more distributed over the length of the stories. Given that news articles often follow a similar structure (e.g., description of the event, possible arrest, possible consequences), the highlighting data suggests that annotators took their Reader perception rating to be more affected by the content. The more uniform distribution of highlights over the whole story in the Author belief question possibly suggests a weaker relation to contentful phrases and rather general considerations of phrasing and language use (as discussed with the varying [length of highlights](##length-of-highlights)).
+
+```{r highl pos bias, echo=FALSE, out.width = "100%", fig.width=15, fig.asp = 0.35, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_viz %>% 
+  mutate(bin01 = str_detect(str_sub(Bin_data, start=1, end=len_bindata*0.1), "1")) %>%
+  mutate(bin02 = str_detect(str_sub(Bin_data, start=len_bindata*0.1, end=len_bindata*0.2), "1")) %>%
+  mutate(bin03 = str_detect(str_sub(Bin_data, start=len_bindata*0.2, end=len_bindata*0.3), "1")) %>%
+  mutate(bin04 = str_detect(str_sub(Bin_data, start=len_bindata*0.3, end=len_bindata*0.4), "1")) %>%
+  mutate(bin05 = str_detect(str_sub(Bin_data, start=len_bindata*0.4, end=len_bindata*0.5), "1")) %>%
+  mutate(bin06 = str_detect(str_sub(Bin_data, start=len_bindata*0.5, end=len_bindata*0.6), "1")) %>%
+  mutate(bin07 = str_detect(str_sub(Bin_data, start=len_bindata*0.6, end=len_bindata*0.7), "1")) %>%
+  mutate(bin08 = str_detect(str_sub(Bin_data, start=len_bindata*0.7, end=len_bindata*0.8), "1")) %>%
+  mutate(bin09 = str_detect(str_sub(Bin_data, start=len_bindata*0.8, end=len_bindata*0.9), "1")) %>%
+  mutate(bin10 = str_detect(str_sub(Bin_data, start=len_bindata*0.9, end=len_bindata), "1")) %>%
+  select(bin01,bin02,bin03,bin04,bin05,bin06,bin07,bin08,bin09,bin10, trial_type) %>%
+  mutate_at(vars(bin01,bin02,bin03,bin04,bin05,bin06,bin07,bin08,bin09,bin10),
+            funs(as.numeric(.))) %>%
+  gather(pos, highlight, -trial_type) %>% 
+  # mutate_at(vars(pos), funs(str_replace_all(.,"bin",""))) %>% 
+  mutate_at(vars(pos), funs(case_when(
+    .=="bin01" ~ "0-10",
+    .=="bin02" ~ "10-20",
+    .=="bin03" ~ "20-30",
+    .=="bin04" ~ "30-40",
+    .=="bin05" ~ "40-50",
+    .=="bin06" ~ "50-60",
+    .=="bin07" ~ "60-70",
+    .=="bin08" ~ "70-80",
+    .=="bin09" ~ "80-90",
+    .=="bin10" ~ "90-100",
+    TRUE ~ "FIRE"
+  ))) %>% 
+  ggplot(., aes(x=pos, y=highlight, fill=trial_type)) +
+    facet_wrap(~trial_type) +
+    stat_summary(fun.y = "mean", 
+                 geom = "bar",
+                 color = "black") +
+    stat_summary(fun.data = "mean_cl_boot",
+                  geom = "errorbar",
+                  color = "black",
+                  size = .3,
+                  width = 0.3) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+    xlab("Story segments (in percent)") +
+    ylab("Proportion of highlights\nfor each segment") +
+    theme(legend.position = "none") +
+    theme(strip.background = element_rect(fill="white"))
+```
+
+
+## Interannotator agreement for highlights
+
+<!-- 0 marks the point of maximum uncertainty, because exactly half of the annotators highlighted this character. -0.5 and 0.5 are the points of maximum certainty because respectively either no or all annotators highlighted the character. Since annotators generally only highlight a small proportion of the test, the majority of the count is on the lower portion of the spectrum. The question type does not seem to matter. -->
+
+```{r interannotator highl original, echo=FALSE, out.width = "60%", fig.width=7, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+newstuff = df_viz %>% 
+  select(Bin_data, story_id, trial_type, len_bindata) %>% 
+  group_by(story_id, trial_type) %>% 
+  mutate(NumOfAnnotations = n()) %>% 
+  ungroup() %>% 
+  # separate the binary string by spaces
+  mutate(sepBindata = gsub("(.{1})", "\\1 ", Bin_data)) %>% 
+  # make each character of the string into its own column, 
+  # named by numbers from 1 to 1968 (the longest story)
+  separate(sepBindata, as.character(1:1968), sep = " ") %>% 
+  select(-Bin_data, -len_bindata) %>% 
+  mutate_at(vars(-story_id, -trial_type), funs(as.numeric(.)))
+
+toplotstuff = newstuff %>% 
+  # for each story and question, sum the highlights for each character to
+  # determine the number of annotator agreement for different characters
+  group_by(story_id, trial_type, NumOfAnnotations) %>% 
+  summarize_all(sum) %>% 
+  ungroup() %>% 
+  # collapse columns such that the column number is in character_id and 
+  # the summed value in highl_sum
+  gather(character_id, highl_sum, -story_id, -trial_type, -NumOfAnnotations)
+
+true_highl = toplotstuff %>% 
+  mutate(highl_prop = (highl_sum/NumOfAnnotations)-0.5) %>% 
+  filter(!is.na(highl_prop)) %>% 
+  select(highl_prop, trial_type) %>% 
+  # rename(true_highl_prop = highl_prop) %>% 
+  mutate(cond = "true")
+
+# toplotstuff %>%
+#   # compute proportion of highlights and center them according to agreement
+#   mutate(highl_prop = (highl_sum/NumOfAnnotations)-0.5) %>%
+#   filter(!is.na(highl_prop)) %>%
+#   ggplot(., aes(x=highl_prop, fill = trial_type)) +
+#     facet_wrap(~trial_type) +
+#     # geom_histogram(bins=8, position = position_dodge()) +
+#     geom_histogram(aes(y = stat(density) * 0.15),
+#                    binwidth = 0.15,
+#                    color="black") +
+#     # theme(axis.text.x = element_text(angle=45, hjust=1)) +
+#     theme(legend.position = "none") +
+#     scale_y_continuous(labels = scales::percent_format()) +
+#     scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+#     xlab("Interannotator highlighting agreement") +
+#     ylab("Number of stories")
+  
+```
+
+```{r interannotator highl shuffled, echo=FALSE, out.width = "60%", fig.width=7, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+library(stringi)
+
+newstuff = df_viz %>% 
+  select(Bin_data, story_id, trial_type, len_bindata) %>% 
+  group_by(story_id, trial_type) %>% 
+  mutate(NumOfAnnotations = n()) %>% 
+  ungroup() %>% 
+  mutate(shuffled_Bin_data = stri_rand_shuffle(Bin_data)) %>% 
+  # separate the binary string by spaces
+  mutate(sepBindata = gsub("(.{1})", "\\1 ", shuffled_Bin_data)) %>% 
+  # make each character of the string into its own column, 
+  # named by numbers from 1 to 1968 (the longest story)
+  separate(sepBindata, as.character(1:1968), sep = " ") %>% 
+  select(-Bin_data, -len_bindata, -shuffled_Bin_data) %>% 
+  mutate_at(vars(-story_id, -trial_type), funs(as.numeric(.)))
+
+toplotstuff = newstuff %>% 
+  # for each story and question, sum the highlights for each character to
+  # determine the number of annotator agreement for different characters
+  group_by(story_id, trial_type, NumOfAnnotations) %>% 
+  summarize_all(sum) %>% 
+  ungroup() %>% 
+  # collapse columns such that the column number is in character_id and 
+  # the summed value in highl_sum
+  gather(character_id, highl_sum, -story_id, -trial_type, -NumOfAnnotations)
+
+shuffled_highl = toplotstuff %>% 
+  mutate(highl_prop = (highl_sum/NumOfAnnotations)-0.5) %>% 
+  filter(!is.na(highl_prop)) %>% 
+  select(highl_prop, trial_type) %>% 
+  # rename(shuffled_highl_prop = highl_prop) %>% 
+  mutate(cond = "shuffled")
+
+# toplotstuff %>% 
+#   # compute proportion of highlights and center them according to agreement
+#   mutate(highl_prop = (highl_sum/NumOfAnnotations)-0.5) %>% 
+#   filter(!is.na(highl_prop)) %>% 
+#   ggplot(., aes(x=highl_prop, fill = trial_type)) +
+#     facet_wrap(~trial_type) +
+#     # geom_histogram(bins=8, position = position_dodge()) +
+#     geom_histogram(aes(y = stat(density) * 0.15), 
+#                    binwidth = 0.15,
+#                    color="black") +
+#     # theme(axis.text.x = element_text(angle=45, hjust=1)) +
+#     theme(legend.position = "none") +
+#     scale_y_continuous(labels = scales::percent_format()) +
+#     scale_fill_manual(values=c(col_susp_comCrime, col_author_belief)) +
+#     xlab("Interannotator highlighting agreement") +
+#     ylab("Number of stories")
+  
+```
+
+We would like to estimate agreement levels for highlighting as well. Because our stories have varying numbers of annotations, we cannot calculate a Fleiss kappa value for this problem. However, we can compare the percentage of annotators who highlighted each character with a random baseline. The random baseline highlights were created by randomly shuffling the underlying highlight distribution for each annotation. Since only 17.8\% of characters are highlighted, most of them are by chance only highlighted by less than half of the annotators (presented in light green). Although this pattern generally holds for the original highlighting data as well (presented in dark green), they crucially vary in their agreement distribution. Compared to the random baseline, characters are less likely to be only highlighted by less than half of the annotators. Instead those characters are either not highlighted by anyone or by a majority of the annotators, suggesting a more meaningful structure in the highlighting data.
+
+According to a Welch Two Sample t-Test, the shuffled highlighting agreement is significantly different from the original highlights (p<0.0001).
+
+```{r interannotator highl, echo=FALSE, out.width = "60%", fig.width=7, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+both_conds = true_highl %>%
+  rbind(shuffled_highl) 
+
+more_stuff = both_conds %>%
+  mutate(highl_prop_bin = case_when(
+    highl_prop == -0.5 ~ "no one",
+    highl_prop < 0 ~ "less than\nhalf",
+    highl_prop == 0 ~ "half",
+    highl_prop == 0.5 ~ "everyone",
+    highl_prop > 0 ~ "more than\nhalf",
+    TRUE ~ "what happened here?"
+  )) %>%
+  mutate_at(vars(highl_prop_bin), funs(factor(., levels=c("no one", "less than\nhalf", "half", "more than\nhalf", "everyone")))) %>%
+  # for calculation of proportion and CIs, duplicate each trial such that each row 
+  # represents an object the participant could have clicked on (4 rows for the 4 objects)
+  slice(rep(1:n(), each = 5)) %>%
+  # each row receives now one out of the 4 objects labels, 
+  # such that the 4 rows for this trial are identical except for this label
+  mutate(poss_agreement = rep_len(c("no one", "less than\nhalf", "half", 
+                                    "everyone", "more than\nhalf"), 
+                                  length.out=n())) %>% 
+  mutate_at(vars(poss_agreement), funs(factor(., levels=c("no one", "less than\nhalf", "half", "more than\nhalf", "everyone")))) %>%
+  # create a one-hot vector that is 1 for the object that was actually clicked on
+  mutate(clicked = ifelse(highl_prop_bin==poss_agreement,1,0))
+
+blub = more_stuff %>% 
+  group_by(cond, poss_agreement) %>% 
+  dplyr::summarize(meanPropClicks = mean(clicked),
+            se_prop=sd(clicked)/sqrt(n()),
+            prop_CI_low=meanPropClicks-1.96*se_prop,
+            prop_CI_high=meanPropClicks+1.96*se_prop
+            ) %>% 
+  ungroup() 
+blub %>%
+  ggplot(., aes(x=poss_agreement, y=meanPropClicks, fill = cond)) +
+    # facet_grid(cols=vars(trial_type)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    geom_errorbar(aes(ymin = prop_CI_low, ymax = prop_CI_high), 
+                  position = position_dodge(.9),
+                  width = 0.3) +
+    theme(legend.position = "top") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    scale_fill_manual(name = "Highlights", labels = c("shuffled", "original"), values=c("#7fceb9", "#009e74")) +
+    # scale_fill_manual(values=c("#7fceb9", "#009e74")) +
+    xlab("Proportion of annotators highlighting token") +
+    ylab("Tokens")
+
+# ggsave(here("highl-agreement.pdf"), height=5, width=6.5)
+
+```
+
+```{r interannotator highl simplified, echo=FALSE, out.width = "60%", fig.width=7, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+# both_conds = true_highl %>%
+#   rbind(shuffled_highl) 
+# 
+# more_stuff = both_conds %>%
+#   mutate(highl_prop_bin = case_when(
+#     highl_prop < 0 ~ "less than\nhalf",
+#     highl_prop >= 0 ~ "half and more",
+#     TRUE ~ "what happened here?"
+#   )) %>%
+#   # mutate_at(vars(highl_prop_bin), funs(factor(., levels=c("no one", "less than\nhalf", "half", "more than\nhalf", "everyone")))) %>%
+#   # for calculation of proportion and CIs, duplicate each trial such that each row 
+#   # represents an object the participant could have clicked on (4 rows for the 4 objects)
+#   slice(rep(1:n(), each = 2)) %>%
+#   # each row receives now one out of the 4 objects labels, 
+#   # such that the 4 rows for this trial are identical except for this label
+#   mutate(poss_agreement = rep_len(c("less than\nhalf", "half and more"), 
+#                                   length.out=n())) %>% 
+#   mutate_at(vars(poss_agreement), funs(factor(., levels=c("less than\nhalf", "half and more")))) %>%
+#   # create a one-hot vector that is 1 for the object that was actually clicked on
+#   mutate(clicked = ifelse(highl_prop_bin==poss_agreement,1,0))
+
+# blub = more_stuff %>% 
+#   group_by(cond, poss_agreement) %>% 
+#   dplyr::summarize(meanPropClicks = mean(clicked),
+#             se_prop=sd(clicked)/sqrt(n()),
+#             prop_CI_low=meanPropClicks-1.96*se_prop,
+#             prop_CI_high=meanPropClicks+1.96*se_prop
+#             ) %>% 
+#   ungroup() 
+# blub %>%
+#   ggplot(., aes(x=poss_agreement, y=meanPropClicks, fill = cond)) +
+#     # facet_grid(cols=vars(trial_type)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     geom_errorbar(aes(ymin = prop_CI_low, ymax = prop_CI_high), 
+#                   position = position_dodge(.9),
+#                   width = 0.3) +
+#     theme(legend.position = "top") +
+#     scale_y_continuous(labels = scales::percent_format()) +
+#     scale_fill_manual(name = "Highlights", labels = c("shuffled", "original"), values=c("#7fceb9", "#009e74")) +
+#     # scale_fill_manual(values=c("#7fceb9", "#009e74")) +
+#     xlab("Proportion of annotators highlighting token") +
+#     ylab("Tokens in percent")
+
+# ggsave(here("highl-agreement.pdf"), height=6.5, width=11)
+
+# library(lmtest)
+# 
+# totest = both_conds %>%
+#   mutate(highl_prop_bin = case_when(
+#     highl_prop < 0 ~ "less than\nhalf",
+#     highl_prop >= 0 ~ "half and more",
+#     TRUE ~ "what happened here?"
+#   )) %>% 
+#   mutate(bin_cond = ifelse(cond=="true", 1, 0)) %>% 
+#   mutate(bin_prop = ifelse(highl_prop_bin=="half and more", 1, 0))
+#   
+# # m = glm(bin_prop ~ bin_cond, data=totest)
+# # summary(m)
+# 
+# t.test(filter(totest, bin_cond == 1)$bin_prop, filter(totest, bin_cond == 0)$bin_prop, paired = FALSE, var.equal = FALSE, conf.level = 0.95)
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+df_viz %>% 
+  select(Bin_data) %>% 
+  mutate(zeros = str_count(Bin_data, "0")) %>% 
+  mutate(ones = str_count(Bin_data, "1")) %>% 
+  dplyr::summarize(all_zeros = sum(zeros),
+            all_ones = sum(ones)) %>% 
+  view()
+
+# zeros: 23694440
+# ones: 4209732
+# ratio: 17.8%
+```
+
+
+```{r krippendorffs alpha, eval=FALSE, fig.asp=0.618, fig.width=7, message=FALSE, warning=FALSE, include=FALSE, out.width="60%", paged.print=FALSE}
+
+library("irr")
+
+#### WORD-LEVEL
+
+df_viz_words = read_csv(here("analyses","02_main","03_highlighting","data","bywordbindata.csv"))
+
+get_alpha <- function(df, f_story_id, f_trial_type){
+  print(f_story_id)
+  df_setup = df %>% 
+    filter(story_id == f_story_id & trial_type == f_trial_type) %>% 
+    # separate the binary string by spaces
+    mutate(sepBindata = gsub("(.{1})", "\\1 ", Bin_data_words)) %>%
+    # make each character of the string into its own column, 
+    # named by numbers from 1 to 1968 (the longest story)
+    separate(sepBindata, as.character(1:.$len_bindatawords), sep = " ") %>%
+    select(-Bin_data_words, -len_bindatawords, -story_id, -trial_type) %>% 
+    mutate_all(funs(as.numeric(.)))
+  matrix = as.matrix(df_setup)
+  return(kripp.alpha(matrix,"nominal")$value)
+}
+
+df_blub = df_viz_words %>%
+  mutate(len_bindatawords = str_length(Bin_data_words)) %>% 
+  mutate(NrOfWords = str_count(story_clean, boundary("word"))) %>% 
+  select(Bin_data_words, story_id, trial_type, len_bindatawords, NrOfWords)
+
+df_summarized = df_blub %>%
+  select(story_id, trial_type) %>%
+  arrange(story_id) %>% 
+  distinct() %>%
+  # filter(story_id<=50) %>%
+  rowwise() %>%
+  mutate(alpha = get_alpha(df_blub, story_id, trial_type))
+
+df_summarized %>%
+  ggplot(., aes(x=alpha, color=trial_type)) +
+    geom_density() +
+    theme(legend.position = "top") +
+    xlab("ALPHA")
+
+df_summarized %>% 
+  group_by(trial_type) %>% 
+  summarize(mean_alpha = mean(alpha))
+
+```
+
+## Intraannotator agreement on what is highlighted for each question
+
+Relatedly, the following graph shows how similar each annotator's highlights are foreach story dependent on the question.
+The similarity between highlights is computed on a by-character basis, where similarity is 1 - (the number of characters that are highlighted in only one question), divided by the total number of characters.
+
+Overall, annotators select similar passages to answer both questions. This suggests that annotators appear to primarily consider very similar information relevant to respond to both questions. However, the overlap is not perfect, providing room to account for the variance we see in the slider ratings and the differences described in the [length of highlights](##length-of-highlights) and their [positions](##highlighting-position-bias).
+
+```{r intraannotator highl, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+library(stringdist)
+
+df_dissim = df_viz %>% 
+  select(trial_type, Bin_data, story_id, annotation_id, len_bindata) %>% 
+  spread(trial_type, Bin_data) %>% 
+  mutate(dissimilarity = stringdist(`Author belief`, `Reader perception`))
+
+
+df_dissim %>% 
+  mutate(prop_dissim = dissimilarity/len_bindata) %>% 
+  mutate(similarity = 1-prop_dissim) %>% 
+  ggplot(., aes(x=similarity)) +
+    geom_histogram(aes(y = stat(count)/sum(stat(count))),
+                   fill=col_unified,
+                   color="black") +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    xlab("Intraannotator highlighting agreement") +
+    ylab("Number of trials")
+
+```
+
+
+## Frequently highlighted words
+
+
+```{r freq highl data prep, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+library(tm)
+
+get_selected_words <- function(highl_loc, string){
+  df_hloc = as.data.frame(highl_loc)
+  extractions = ""
+  for (i in 1:length(df_hloc$start)){
+    new_extraction = str_sub(string, df_hloc$start[i], df_hloc$end[i])
+    extractions = str_c(extractions, new_extraction, sep=" ")
+  }
+  return(extractions)
+}
+
+df_highlighted = df_viz %>% 
+  select(Bin_data, story_clean, story_id, annotation_id, story_whighl, trial_type, slider_val) %>% 
+  # mutate_at(vars(story_clean), funs(str_to_lower(.))) %>% 
+  mutate(story_lower = str_to_lower(story_clean)) %>% 
+  # filter(story_id <= 800) %>%
+  mutate(highl_loc = str_locate_all(Bin_data, "1+")) %>% 
+  rowwise() %>% 
+  mutate(selected_words = get_selected_words(highl_loc, story_lower))
+
+all_highlighted_words = paste(df_highlighted$selected_words, collapse = "")
+
+extract_mostcommon <- function(df_string, nr_of_words=FALSE){
+  separated_words = strsplit(df_string, "[[:space:]]+")[[1]]
+  no_stopwords = removeWords(separated_words, stopwords("english"))
+  
+  other_symbols = "\\.|\"|,"
+  
+  # max_wordlist = separated_words %>%
+  max_wordlist = no_stopwords %>%
+    as_tibble() %>% 
+    mutate_at(vars(value), funs(str_replace_all(., other_symbols, ""))) %>% 
+    group_by(value) %>% 
+    summarize(count = n()) %>% 
+    ungroup() %>% 
+    arrange(-count) %>% 
+    filter(value != "") %>% 
+    mutate(proportion = (count/sum(count)))
+  
+  return(max_wordlist)
+}
+
+```
+
+### Overall
+
+Below we see the most likely words to be highlighted independent of question and chosen slider value. Whether a word was highlighted does not give an indication on whether it contributed to an increase or decrease in the rating provided.
+
+The most highlighted word is *police* which makes up 2.5% of all highlights.
+Overall, a high rate of these words can count as hedges, such as *said, allegedly, according, accused*, and *alleges*. Another big portion of the selections refer to the act itself as in *crime, stolen, assault, possession* and *robbery*. A last group we can identify is one of the "judicial" procedure such as *police, suspect, suspects, victim, charges, officers, investigation, identified*.
+
+```{r freq highl overall, echo=FALSE, out.width = "100%", fig.width=10, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+extract_mostcommon(all_highlighted_words) %>% 
+    head(n=30) %>% 
+    ggplot(., aes(x=reorder(value, -proportion), y=proportion)) +
+      geom_bar(stat="identity",
+               fill=col_unified,
+               color="black") +
+      theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+      scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+      ylab("Highlights\n(number of highlights / all highlights)") +
+      xlab("")
+      # ylab("Proportion of highlights") +
+      # xlab("Most highlighted words (overall)")
+
+# ggsave(here("writing", "2020_CoNLL", "img", "highl-overall.pdf"), width=10.5, height=6)
+```
+
+### Reader perception vs. Author belief
+
+The earlier analysis suggests that while the two questions appear to be correlated, they also differ in their average rating and what is highlighted. In the following graph, we give the words with the largest differences between the two guilt questions. Words that appear more to the left show the largest difference between highlights. Conventionalized devices like the hedges we saw above, which signal lack of commitment in reporting, become more prominent in the Author belief condition. This supports [Kreiss et al.](https://github.com/elisakreiss/iteratednarration/blob/master/writing/2019_cogsci/cogsci_IN.pdf)’s earlier findings of the relevance of these words for Author belief and not Reader perception, and further suggests that readers appear to have a metalinguistic awareness.
+
+```{r freq highl byquestion, echo=FALSE, out.width = "100%", fig.width=10, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+authorbelief_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Author belief",]$selected_words, collapse = "")
+
+committedCrime_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Reader perception",]$selected_words, collapse = "")
+
+
+all_questions = extract_mostcommon(authorbelief_highl_words) %>% 
+  rename(authorbelief_prop = proportion) %>% 
+  select(-count) %>% 
+  left_join(extract_mostcommon(committedCrime_highl_words)) %>% 
+  rename(committedCrime_prop = proportion) %>% 
+  select(-count)
+
+# all_questions %>% 
+#   arrange(-authorbelief_prop) %>% 
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>% 
+#   gather(slider, occurrences, -value, -ID) %>% 
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+# 
+# all_questions %>% 
+#   arrange(-committedCrime_prop) %>% 
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>% 
+#   gather(slider, occurrences, -value, -ID) %>% 
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+
+all_questions %>% 
+  mutate(prop_diff = abs(authorbelief_prop - committedCrime_prop)) %>% 
+  arrange(-prop_diff) %>% 
+  head(n=30) %>%
+  rowid_to_column("ID") %>% 
+  gather(question, occurrences, -value, -ID, -prop_diff) %>% 
+  mutate_at(vars(question), funs(fct_relevel(.,c("committedCrime_prop", "authorbelief_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=question)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    scale_fill_manual(name = "Question", labels = c("Reader perception", "Author belief"), values=c(col_susp_comCrime, col_author_belief)) +
+    ylab("Highlights\n(number of highlights / all highlights)") +
+    # xlab("Words with the biggest highlighting\ndifference between questions") +
+    xlab("")
+
+# ggsave(here("writing", "2020_CoNLL", "img", "highl-byquestion.pdf"), width=10.5, height=6)
+
+```
+
+### High vs. low rating
+
+Here we compare the lowest and highest guilt ratings given. We chose all annotations with ratings below the middle 50 slider rating, which are 1528 data points. To have approximately the same amount of data points on the higher rating end, we chose annotations above 99 rating, which are 3462 data points.
+
+Plotted are the proportion of highlights with stories that received high and low guilt slider ratings. The x-axis is ordered according to the difference between highlights such that words to the left show the biggest difference. 
+Hedges and uncertainty expression such as *alleged, allegedly* and *accused* are highlighted more often when participants gave lower guilt ratings. Higher ratings rather correspond with nouns and verbs directly associated with the crime such as *possession, stolen, vehicle, charged, officers, car* and *surveillance*.
+
+```{r freq highl slider extreme, echo=FALSE, out.width = "100%", fig.width=10, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+# nrow(df_highlighted[df_highlighted$slider_val>99,])
+# # nrow(df_highlighted[df_highlighted$slider_val>50,])
+# nrow(df_highlighted[df_highlighted$slider_val<50,])
+
+highslider_highl_words = paste(df_highlighted[df_highlighted$slider_val>99,]$selected_words, collapse = "")
+
+# highslider_highl_words = paste(df_highlighted[df_highlighted$slider_val>50,]$selected_words, collapse = "")
+
+lowslider_highl_words = paste(df_highlighted[df_highlighted$slider_val<50,]$selected_words, collapse = "")
+
+all_sliders = extract_mostcommon(highslider_highl_words) %>% 
+  rename(high_prop = proportion) %>% 
+  select(-count) %>% 
+  left_join(extract_mostcommon(lowslider_highl_words)) %>% 
+  rename(low_prop = proportion) %>% 
+  select(-count)
+
+# all_sliders %>% 
+#   arrange(-high_prop) %>% 
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>% 
+#   gather(slider, occurrences, -value, -ID) %>% 
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+# 
+# all_sliders %>% 
+#   arrange(-low_prop) %>% 
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>% 
+#   gather(slider, occurrences, -value, -ID) %>% 
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+
+all_sliders %>% 
+  mutate(prop_diff = abs(high_prop - low_prop)) %>% 
+  arrange(-prop_diff) %>% 
+  head(n=30) %>%
+  rowid_to_column("ID") %>% 
+  gather(slider, occurrences, -value, -ID, -prop_diff) %>% 
+  mutate_at(vars(slider), funs(fct_relevel(., c("low_prop", "high_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    scale_fill_manual(name = "Slider", labels = c("low_prop"="Low rating", "high_prop"="High rating"), values=c(col_low_rating, col_high_rating)) +
+    # ylab("Proportion of highlights") +
+    xlab("Words with the biggest highlighting\ndifference between ratings") +
+    ylab("Highlights\n(number of highlights / all highlights)")
+    # xlab("")
+
+```
+
+### Rating & question interaction
+
+When participants were asked about the author's belief, hedge words such as *alleged, allegedly* and *accused* show the biggest difference in highlights dependent on the rating. Hedges were marked more often when a low rating was given. (But note that hedges do not in general occur more often in the stories rated lower.)
+
+Firstly we see that hedges and uncertainty expression such as *alleged, allegedly* and *accused* are highlighted more often when participants gave lower guilt ratings. Higher ratings rather correspond with nouns and verbs directly associated with the crime such as *assault, stolen, vehicle, charged, officers* and *video*.
+
+Now we compare the interactions between questions and high/low ratings. When the rating is high, *allegedly* is highlighted at a very similar rate for both questions (position 25). However when the rating is low, *allegedly* becomes the word with the biggest difference between the two questions. It is considered more relevant in the context of the author's belief in guilt than the Reader perception in guilt. This is in line with the qualitative results from the CogSci 2019 paper.
+
+```{r freq highl question slider extreme, echo=FALSE, out.width = "50%", fig.width=10, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# nrow(df_highlighted[df_highlighted$trial_type=="Author belief" & df_highlighted$slider_val>99,])
+# nrow(df_highlighted[df_highlighted$trial_type=="Reader perception" & df_highlighted$slider_val>99,])
+# nrow(df_highlighted[df_highlighted$trial_type=="Author belief" & df_highlighted$slider_val<50,])
+# nrow(df_highlighted[df_highlighted$trial_type=="Reader perception" & df_highlighted$slider_val<50,])
+
+auth_highslider_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Author belief" & df_highlighted$slider_val>99,]$selected_words, collapse = "")
+
+auth_lowslider_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Author belief" & df_highlighted$slider_val<50,]$selected_words, collapse = "")
+
+susp_highslider_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Reader perception" & df_highlighted$slider_val>99,]$selected_words, collapse = "")
+
+susp_lowslider_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Reader perception" & df_highlighted$slider_val<50,]$selected_words, collapse = "")
+
+all_sliders = 
+  extract_mostcommon(auth_highslider_highl_words) %>%
+  rename(auth_high_prop = proportion) %>%
+  select(-count) %>%
+  left_join(extract_mostcommon(auth_lowslider_highl_words)) %>%
+  rename(auth_low_prop = proportion) %>%
+  select(-count) %>%
+  left_join(extract_mostcommon(susp_highslider_highl_words)) %>%
+  rename(susp_high_prop = proportion) %>%
+  select(-count) %>% 
+  left_join(extract_mostcommon(susp_lowslider_highl_words)) %>%
+  rename(susp_low_prop = proportion) %>%
+  select(-count)
+
+# all_sliders %>%
+#   arrange(-auth_high_prop) %>%
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>%
+#   gather(slider, occurrences, -value, -ID) %>%
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+# 
+# all_sliders %>%
+#   arrange(-auth_low_prop) %>%
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>%
+#   gather(slider, occurrences, -value, -ID) %>%
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+# 
+# all_sliders %>%
+#   arrange(-susp_high_prop) %>%
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>%
+#   gather(slider, occurrences, -value, -ID) %>%
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+# 
+# all_sliders %>%
+#   arrange(-susp_low_prop) %>%
+#   head(n=30) %>%
+#   rowid_to_column("ID") %>%
+#   gather(slider, occurrences, -value, -ID) %>%
+#   ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+#     geom_bar(stat="identity", position=position_dodge()) +
+#     theme(legend.position = "top") +
+#     theme(axis.text.x = element_text(angle = 30, hjust=1))
+
+all_sliders %>%
+  select(-susp_high_prop, -susp_low_prop) %>% 
+  mutate(prop_diff = abs(auth_high_prop - auth_low_prop)) %>%
+  arrange(-prop_diff) %>%
+  head(n=15) %>%
+  rowid_to_column("ID") %>%
+  gather(slider, occurrences, -value, -ID, -prop_diff) %>%
+  mutate_at(vars(slider), funs(fct_relevel(., c("auth_low_prop", "auth_high_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    ylab("Highlights") +
+    scale_fill_manual(name = "Ratings in Author belief question", labels = c("low_prop"="Low rating", "high_prop"="High rating"), values=c(col_author_low, col_author_high)) +
+    xlab("Words with the biggest highlighting difference")
+
+all_sliders %>%
+  select(-auth_high_prop, -auth_low_prop) %>% 
+  mutate(prop_diff = abs(susp_high_prop - susp_low_prop)) %>%
+  arrange(-prop_diff) %>%
+  head(n=15) %>%
+  rowid_to_column("ID") %>%
+  gather(slider, occurrences, -value, -ID, -prop_diff) %>%
+  mutate_at(vars(slider), funs(fct_relevel(., c("susp_low_prop", "susp_high_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    ylab("Highlights") +
+    scale_fill_manual(name = "Ratings in Reader perception question", labels = c("low_prop"="Low rating", "high_prop"="High rating"), values=c(col_susp_low, col_susp_high)) +
+    xlab("Words with the biggest highlighting difference")
+
+all_sliders %>%
+  select(-susp_low_prop, -auth_low_prop) %>% 
+  mutate(prop_diff = abs(auth_high_prop - susp_high_prop)) %>%
+  arrange(-prop_diff) %>%
+  head(n=15) %>%
+  rowid_to_column("ID") %>%
+  gather(slider, occurrences, -value, -ID, -prop_diff) %>%
+  mutate_at(vars(slider), funs(fct_relevel(., c("susp_high_prop", "auth_high_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    ylab("Highlights") +
+    scale_fill_manual(name = "Question types in high rating", labels = c("Reader perception", "Author belief"), values=c(col_susp_comCrime, col_author_belief)) +
+    xlab("Words with the biggest highlighting difference")
+
+all_sliders %>%
+  select(-susp_high_prop, -auth_high_prop) %>% 
+  mutate(prop_diff = abs(auth_low_prop - susp_low_prop)) %>%
+  arrange(-prop_diff) %>%
+  head(n=15) %>%
+  rowid_to_column("ID") %>%
+  gather(slider, occurrences, -value, -ID, -prop_diff) %>%
+  mutate_at(vars(slider), funs(fct_relevel(., c("susp_low_prop", "auth_low_prop")))) %>% 
+  ggplot(., aes(x=reorder(value, ID), y=occurrences, fill=slider)) +
+    geom_bar(stat="identity", position=position_dodge(), color="black") +
+    theme(legend.position = "top") +
+    theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    ylab("Highlights") +
+    scale_fill_manual(name = "Question types in low rating", labels = c("Reader perception", "Author belief"), values=c(col_susp_comCrime, col_author_belief)) +
+    xlab("Words with the biggest highlighting difference")
+
+```
+
+## Correlation of overall word frequency and highlighted frequency
+
+Above we have done the simplest form of highlighting analysis: removed the stopwords and extract the 30 most highlighted words. However the amount of times a word is highlighted, highly correlates with the number of occurrences (r=0.968) which suggests that some words are simply highlighted more often because they occur more often. While this correlation is an important confound, it can't explain away the differences we find in highlights between the two questions and low vs. high ratings.
+
+```{r people token importance, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "100%", fig.width=13, fig.asp = 0.45}
+
+get_selected_words <- function(highl_loc, string){
+  df_hloc = as.data.frame(highl_loc)
+  extractions = ""
+  for (i in 1:length(df_hloc$start)) {
+    
+    space_found = FALSE
+    start_point = df_hloc$start[i]
+    while (!space_found & start_point > 0) {
+      if (str_detect(str_sub(string, start_point, start_point), "[[:punct:]]|[[:space:]]")) {
+        space_found = TRUE
+        start_point = start_point + 1
+      } else {
+        start_point = start_point - 1
+      }
+    }
+    
+    space_found = FALSE
+    end_point = df_hloc$end[i]
+    while (!space_found & end_point < str_length(string)) {
+      if (str_detect(str_sub(string, end_point, end_point), "[[:punct:]]|[[:space:]]")) {
+        space_found = TRUE
+        end_point = end_point - 1
+      } else {
+        end_point = end_point + 1
+      }
+    }
+    
+    if (start_point < end_point) {
+      new_extraction = str_sub(string, start_point, end_point)
+      extractions = str_c(extractions, new_extraction, sep=" ") 
+    }
+  }
+  return(extractions)
+}
+
+df_highlighted = df_viz %>%
+  select(Bin_data, story_clean, story_id, annotation_id, story_whighl, trial_type, slider_val) %>% 
+  mutate(story_lower = str_to_lower(story_clean)) %>% 
+  # fix possessive s to not contain special character
+  # mutate_at(vars(story_lower), funs(str_replace_all(., "'s", "s"))) %>%
+  mutate(highl_loc = str_locate_all(Bin_data, "1+")) %>% 
+  rowwise() %>% 
+  mutate(selected_words = get_selected_words(highl_loc, story_lower)) %>%
+  mutate_at(vars(selected_words), funs(str_replace_all(., "[[:punct:]]", " "))) %>% 
+  mutate(full_Bindata = str_dup("1", str_length(Bin_data))) %>% 
+  mutate(highl_loc = str_locate_all(full_Bindata, "1+")) %>% 
+  rowwise() %>% 
+  mutate(all_words = get_selected_words(highl_loc, story_lower)) %>%
+  mutate_at(vars(all_words), funs(str_replace_all(., "[[:punct:]]", " ")))
+  # filter(trial_type=="Reader perception")
+  
+
+all_highlighted_words = paste(df_highlighted$selected_words, collapse = "")
+all_words = paste(df_highlighted$all_words, collapse = "")
+
+extract_mostcommon <- function(df_string, nr_of_words=FALSE){
+  separated_words = strsplit(df_string, "[[:space:]]+")[[1]]
+  # no_stopwords = removeWords(separated_words, stopwords("english"))
+  
+  # other_symbols = "\\.|\"|,"
+  
+  max_wordlist = separated_words %>%
+  # max_wordlist = no_stopwords %>%
+    as_tibble() %>% 
+    # mutate_at(vars(value), funs(str_replace_all(., other_symbols, ""))) %>% 
+    group_by(value) %>% 
+    summarize(count = n()) %>% 
+    ungroup() %>% 
+    arrange(-count) %>% 
+    filter(value != "") %>% 
+    mutate(proportion = (count/sum(count)))
+  
+  return(max_wordlist)
+}
+
+all_words = extract_mostcommon(all_words) %>% 
+  select(value, count) %>% 
+  rename(total_count = "count")
+all_highl_words = extract_mostcommon(all_highlighted_words) %>% 
+  select(value, count) %>% 
+  rename(highl_count = "count")
+
+summary_highl = all_words %>% 
+  left_join(all_highl_words) %>% 
+  mutate(prop = highl_count/total_count) %>% 
+  # mutate(hedge = str_detect(value, hedges_lexicon)) %>% 
+  mutate(log_frq = log(total_count)) %>% 
+  # excludes possessive s and other single letter stuff
+  filter(str_length(value) > 1)
+  
+# view(summary_highl)
+
+nostopw_people = summary_highl %>% 
+  filter(!(value %in% stopwords("english"))) 
+  # mutate(best_word = str_detect(value, best_words))
+
+# 1) 30 most highlighted words
+# simplest analysis: remove common stopwords and determine which words participants highlighted the most
+
+# nostopw_people %>% 
+#   arrange(-highl_count) %>% 
+#   head(n=30) %>% 
+#   ggplot(., aes(x=reorder(value, -highl_count), y=highl_count)) +
+#       geom_bar(stat="identity",
+#                fill=col_unified) +
+#       theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+#       ylab("Number of highlights") +
+#       xlab("Most highlighted words (overall)")
+
+# ggsave(here("writing", "2020_CoNLL", "img", "highl-overall.pdf"), width=10.5, height=6)
+
+# 2) however the amount of times a word is highlighted, highly correlates with the number of occurrences 
+# correlation: 96.8%
+# but there is still variance along the y axis for the same x value
+
+best_words_df = nostopw_people %>% 
+  arrange(-highl_count) %>% 
+  head(n=30)
+best_words = str_c("\\b(", str_c(best_words_df$value, collapse = "|"), ")\\b")
+
+nostopw_people_b = nostopw_people %>% 
+  mutate(best_word = str_detect(value, best_words))
+
+corr_frq_highl = cor(nostopw_people$total_count,nostopw_people$highl_count, use="complete.obs")
+
+labels = "\\b(police|said|allegedly|suspect|arrested|according|county|man|accused|charged|victim|year|department|found|criminal|crime|identified|news|court|surveillance|admitted|incident|attorney|shutterstock)\\b"
+
+nostopw_people_b %>% 
+  ggplot(., aes(x=total_count, y=highl_count, color=best_word)) +
+    geom_point(alpha=0.2) +
+    theme(legend.position = "none") +
+    scale_color_manual(values = c("#a6a6a6", "#ff7f7f")) +
+    geom_text(x=10000, 
+              y=9000, 
+              label=str_c("r = ", round(corr_frq_highl, 2)), 
+              color="black",
+              size=6) +
+    xlab("Overall word frequency") +
+    ylab("Highlighting frequency") +
+    geom_text(
+              data=filter(nostopw_people_b, str_detect(value, labels)),
+              aes(x=total_count, y=highl_count, label=value),
+              # aes(label=value),
+              hjust=-0.15, 
+              vjust=0)
+    # xlim(c(0,10000)) +
+    # ylim(c(0,2000))
+
+```
+
+For a qualitative analysis, we can unfold word frequency on the x axis. By chance, words would be highlighted 14.88% of the time, indicated by the dashed grey line. Words that are highlighted more often than predicted by chance are above this line, suggesting that they take on an important role in annotators' judgments. Words that are highlighted less than expected by chance are not considered relevant for assessment and words that are at chance might cooccur with more and less relevant information.
+
+If words occur very rarely we cannot determine their context-invariant importance which is why we exclude words that occur less than 25 times.
+
+We can see that the [30 most highlighted words](##frequently-highlighted-words) (here in red) are also among the most frequently occuring words, as suggested by the high correlation between frequency and number of highlights above. The overall patterns seem reassuring. While the words above chance can generally be associated with criminal investigations, words at the bottom are less so. While words on the top for instance refer to evidence, such as *eyewitnesses, camera, footage*, and *surveillance*, the words on the bottom rather reference general words that come with metainformation of the article, such as *google, newsletter, shutterstock*, and *map*.
+
+```{r highl prop freq, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "100%", fig.width=11, fig.asp = 0.5}
+# 3) we therefore want to look at the proportion of highlights
+# if words occur rarely we cannot determine their context-invariant importance which is why we exclude words that occur less than 25 times
+
+emp_best_words = "\\b(police|said|allegedly|suspect|arrested|man|county|charged|arrest|vehicle|crime|identified|confession|accusation|eyewitnesses|consistent|admitted|confessed|footage|cameras|grams|captured|surveillance|evidence|suspected|news|courtesy|google|shutterstock|witnesses|forensics|voluntarily|incriminating|guilt|dogs|match|guilty|tips|newsletter|map|containing|armed|handcuffs|possessed|altered|trespassing|dead|discovered|prison|brooklyn|mischief|incarcerated|thought|beaten|defend|successful|documents|defendents)\\b"
+
+nostopw_people_b %>%
+  filter(total_count > 25) %>% 
+  ggplot(., aes(x=log_frq, y=prop, color=best_word, label=value)) +
+    geom_point(alpha=0.2) +
+    # geom_text(aes(label=value),
+    #           hjust=0,
+    #           vjust=0,
+    #           color="lightgrey") +
+    geom_label(data=filter(nostopw_people_b, str_detect(value, emp_best_words)),
+              aes(x=log_frq, y=prop, label=value),
+              hjust=0, 
+              vjust=0) +
+    scale_color_manual(values = c("#a6a6a6", "#ff7f7f")) +
+    theme(legend.position = "none") +
+    xlim(c(3.7,11.5)) +
+    ylim(c(0,0.62)) +
+    # xlim(c(6,7)) +
+    # ylim(c(0.2,0.3)) +
+    xlab("Overall word frequency (log)") +
+    # ylab("Proportion of highlights") +
+    ylab("Highlights\n(number of highlights / frequency)") +
+    geom_hline(yintercept = 0.1488, color="grey", linetype="dashed")
+
+# ggsave(here("writing", "2020_CoNLL", "img", "highl-prop.pdf"), width=11, height=6)
+
+# probability that a word is highlighted: 14.88%
+# sum(nostopw_people$highl_count, na.rm = TRUE)/sum(nostopw_people$total_count)
+```
+
+
+## Effect of hedges on slider ratings and highlights
+
+```{r hedge lexicons, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# replace "about" with "more than" and "less than"
+# excluded "may" because of month
+# excluded "like" since this is rarely an uncertainty marker in news articles
+# excluded "little"
+hedges_lexicon = c("\\b(actually|allege|alleges|alleged|allegedly|alleging|almost|appear|appears|appeared|appearing|apparent|apparently|approximate|approximately|around|assume|assumes|assumed|assuming|at least|believe|believes|believed|believing|could|doubt|doubts|doubted|estimate|estimates|estimated|estimating|few|frequently|generally|if|indicate|indicates|indicated|indicating|kind of|kinda|largely|less than|look like|mainly|might|more than|mostly|nearly|occasionally|over|partially|perhaps|possibility|possible|possibly|probable|probably|quite|rather|rough|roughly|seem|seems|seemed|seemingly|should|somehow|sometimes|somewhat|sort of|sorta|speculate|speculates|speculated|speculating|suggest|suggests|suggested|suggesting|suppose|supposes|supposed|supposing|supposedly|sure|tend|tends|tended|tending|up to|vague|vaguely|virtually|would)\\b")
+
+```
+
+```{r hedge lexicon for final model, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+replace_stuff <- function(hedg_loc, string){
+  if (nrow(hedg_loc) > 0){
+    df_hloc = as.data.frame(hedg_loc)
+    replacements = string
+    for (i in 1:length(df_hloc$start)){
+      repl_string = strrep("1", (df_hloc$end[i]-df_hloc$start[i]+1))
+      str_sub(replacements, df_hloc$start[i], df_hloc$end[i]) <- repl_string
+    }
+    return(replacements)
+  } else {
+   return(string) 
+  }
+}
+
+df_model_hedges = df_model %>% 
+  mutate(story_lowercase = str_to_lower(story_clean)) %>% 
+  mutate(hedges_loc = str_locate_all(story_lowercase, hedges_lexicon)) %>% 
+  mutate(Bin_data_zeros = str_dup("0", str_length(Bin_data))) %>% 
+  rowwise() %>%
+  mutate(Bin_data_highlhedges = replace_stuff(hedges_loc, Bin_data)) %>% 
+  mutate(Bin_data_hedgesonly = replace_stuff(hedges_loc, Bin_data_zeros)) %>% 
+  rename(Bin_data_highlonly = Bin_data) %>% 
+  select(box_checked, headline, trial_type, slider_val, story_clean, story_id, story_whighl_cleaned, Bin_data_highlonly, Bin_data_hedgesonly, Bin_data_highlhedges, annotation_id, unanswered_prop)
+
+# view(df_model_hedges)
+
+# debug = df_model_hedges %>%
+#   mutate(len_bin_data = str_length(Bin_data_highlonly)) %>%
+#   mutate(len_bin_data_h = str_length(Bin_data_highlhedges)) %>%
+#   mutate(equal = len_bin_data == len_bin_data_h) %>%
+#   view()
+
+# write.table(df_model_hedges, file='model_full_data.tsv', quote=FALSE, sep='\t', col.names = NA)
+
+```
+
+
+The number of hedges tends to increase with the length of the stories. 
+
+```{r hedges per story, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_hedges = df_highlighted %>% 
+  mutate(NumOfWords = str_count(story_clean, boundary("word"))) %>%
+  mutate(hedges_totalcount = str_count(story_clean, regex(hedges_lexicon, ignore_case = TRUE))) %>% 
+  mutate(hedges_highlcount = str_count(selected_words, hedges_lexicon))
+
+df_hedges %>% 
+  distinct(story_id, .keep_all = TRUE) %>% 
+  ggplot(., aes(x=NumOfWords, y=hedges_totalcount)) +
+    geom_point(alpha=0.25) + 
+    geom_smooth(method="lm", color=col_unified) +
+    xlab("Number of words per story") +
+    ylab("Number of hedges per story")
+  
+```
+
+
+While it seems a reasonable hypothesis that the guilt assessment changes dependent on the number of hedges, the left graph shows that there is no correlation between the absolute number of hedges in the original stories and slider ratings.
+
+However, when we look at which words were highlighted, we can see that uncertainty expressions are more likely to be highlighted with lower slider rating, but only in the Author belief question. This means that even though those uncertainty expressions do not occur more often in lower rated questions, they are highlighted more often as a justification of lower ratings. However this is only the case when the question is about the author's beliefs and not the "objective" guilt question, indicating that these expressions do not hedge on the actual event but rather on the reader's perception of the author's opinion. This replicates earlier findings in [Kreiss et al. (2019)](https://github.com/elisakreiss/iteratednarration/blob/master/writing/2019_cogsci/cogsci_IN.pdf).
+
+```{r highlhedge-sliderval corr, echo=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+df_hedges %>%
+  # ggplot(., aes(x=hedges_totalcount, y=slider_val, color=trial_type)) +
+  ggplot(., aes(x=slider_val, y=hedges_totalcount, color=trial_type)) +
+    geom_point(alpha=0.3) +
+    geom_smooth(method="lm",alpha=0.2,size=2) +
+    xlab("Number of hedges") +
+    ylab("Slider rating") +
+    theme(legend.position = "top") +
+    scale_color_manual(name = "Question", labels = c("Reader perception", "Author belief"), values=c(col_susp_comCrime, col_author_belief))
+
+# ggplot(df_hedges, aes(x=hedges_highlcount, y=slider_val, color=trial_type)) +
+ggplot(df_hedges, aes(x=slider_val, y=hedges_highlcount, color=trial_type)) +
+  # facet_wrap(~trial_type) +
+  geom_point(alpha=0.2) +
+  geom_smooth(method="lm") +
+  theme(legend.position = "top") +
+  scale_color_manual(name = "Question", labels = c("Reader perception", "Author belief"), values=c(col_susp_comCrime, col_author_belief)) +
+  ylab("Number of highlighted hedges") +
+  xlab("Slider rating")
+
+# library(lme4)
+# library(lmerTest)
+# 
+# m = lm(hedges_highlcount ~ trial_type*slider_val, data=df_hedges)
+# summary(m)
+
+```
+
+
+# Model token importance analysis
+
+Finally, we can inspect which tokens the model considers relevant and relate those to the words annotators highlighted. 
+In the graph below, we see the average importance for each token as assigned by the model. The values are obtained from the test-set runs averaged across 20 genre-pretrained models with different random train–test splits. In contrast to the highlighting data, the token importance measure differentiates between tokens that increase (> 0) and decrease the predicted rating (< 0). The 30 words which were most highlighted by the annotators are presented in red. Note that those words are not as predictable by token frequency here since the empirical highlighting data is over the whole dataset and the model's token importance is only computed over a subset of this data.
+
+While it seems intuitive that *confessed* increases the predicted rating and *alleging* reduces it, it seems rather unintuitive that *innocent* should increase the rating and *suspicion* reduce it.
+
+```{r model token importance pretrained, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "100%", fig.width=11, fig.asp = 0.6}
+
+library(tm)
+
+# punct_chars = c(".", ",", "!", ":", "/", "|", "'", '"', "\\", "_", "-")
+
+df_mti = read_csv(here("analyses","02_main","03_highlighting","data","model_tokenimportance","pretrained_authorbelief.csv")) %>%
+  rbind(read_csv(here("analyses","02_main","03_highlighting","data","model_tokenimportance","pretrained_readerperception.csv"))) %>%
+  mutate_at(vars(trial_type), funs(ifelse(.==0, "author_belief", "general_belief"))) %>% 
+  group_by(token) %>%
+  mutate(frq = n()) %>% 
+  mutate(log_frq = log(frq)) %>% 
+  ungroup() %>% 
+  mutate(stopword = token %in% stopwords("english")) %>% 
+  mutate(token_score_abs = abs(token_score)) %>% 
+  # mutate(punctuation = token %in% punct_chars) %>% 
+  filter(str_length(token) > 1)
+
+mti_meanabs = df_mti %>% 
+  # filter(trial_type == "general_belief") %>% 
+  group_by(token, log_frq, stopword) %>% 
+  # summarize(mean_ts = mean(token_score_abs)) %>%
+  summarize(mean_ts = mean(token_score)) %>%
+  ungroup() %>% 
+  mutate(best_word = str_detect(token, best_words) & !str_detect(token, "#")) %>% 
+  mutate(emp_best_word = str_detect(token, emp_best_words) & !str_detect(token, "#"))
+
+# with stopwords
+# mti_meanabs %>% 
+#   ggplot(., aes(x=log_frq, y=mean_ts, color=best_word, label=token)) +
+#     # facet_wrap(~trial_type) +
+#     geom_point() +
+#     geom_text(aes(label=token),hjust=0, vjust=0) +
+#     theme(legend.position = "none")
+    
+nostopw = mti_meanabs %>%
+  filter(!stopword)
+
+best_model_words = "\\b(police|said|allegedly|according|accused|charged|man|county|criminal|suspects|charges|alleged|identified|confession|accusation|eyewitnesses|presumed|consistent|admitted|confessed|footage|camera|grams|captured|surveillance|evidence|video|innocent|disclosed|alleging|arguing|sought|file|contributed|guilty|say|warrant|attempting|firearm|suspicion|may|armed|intent|photo|recorded|reward)\\b"
+
+# 1) This one
+nostopw %>% 
+  mutate(mean_logfrq = mean(log_frq)) %>%
+  # filter(log_frq > mean_logfrq) %>%
+  filter(log_frq > 4.5) %>%
+  # filter(log_frq > 6) %>%
+  ggplot(., aes(x=log_frq, y=mean_ts, label=token, color=emp_best_word)) +
+    # facet_wrap(~trial_type) +
+    geom_point(alpha=0.2) +
+    # geom_text(
+    #           # data=filter(nostopw, str_detect(token, best_model_words) &
+    #           #               !str_detect(token, "#") & log_frq > 4.5),
+    #           # aes(x=log_frq, y=mean_ts, label=token),
+    #           aes(label=token),
+    #           color="lightgrey",
+    #           hjust=0, 
+    #           vjust=0) +
+    geom_label(data=filter(nostopw, str_detect(token, best_model_words) &
+                            !str_detect(token, "#") & log_frq > 4.5),
+              aes(x=log_frq, y=mean_ts, label=token),
+              hjust=0, 
+              vjust=0) +
+    scale_color_manual(values = c("#a6a6a6", "#ff7f7f")) +
+    theme(legend.position = "none") +
+    xlab("Token frequency (log)") +
+    ylab("Mean token importance") +
+    xlim(c(4.5,10.7))
+    # geom_text(aes(label=token),hjust=0, vjust=0)
+
+# ggsave(here("writing", "2020_CoNLL", "img", "tokenimp.pdf"), width=10.5, height=6)
+
+# between questions token importance
+# nostopw %>% 
+#   spread(trial_type, mean_ts) %>% 
+#   mutate(diff=author_belief - general_belief) %>% 
+#   ggplot(., aes(x=log_frq,y=diff, label=token)) +
+#     geom_point() +
+#     geom_text(aes(label=token),hjust=0, vjust=0)
+# 
+# # most Author belief
+# mti_meanabs %>% 
+#   spread(trial_type, mean_ts) %>% 
+#   mutate(diff=author_belief - general_belief) %>% 
+#   arrange(-diff) %>% 
+#   head(n=30) %>% 
+#   ggplot(., aes(x=reorder(token,-diff), y=diff)) +
+#     geom_point() +
+#     theme(axis.text.x = element_text(angle=45, hjust=1))
+# 
+# # most Reader perception
+# mti_meanabs %>% 
+#   spread(trial_type, mean_ts) %>% 
+#   mutate(diff=author_belief - general_belief) %>% 
+#   arrange(diff) %>% 
+#   head(n=30) %>% 
+#   ggplot(., aes(x=reorder(token,diff), y=diff)) +
+#     geom_point() +
+#     theme(axis.text.x = element_text(angle=45, hjust=1))
+
+```
+
+
+
+## Model token importance vs. annotators highlights
+
+We now compare the token importance assigned by our model for words that were highlighted more than expected at random (purple) and words that were highlighted less than expected at random (green). 
+The model without pretraining puts on average the same importance on words that people seem to consider crucial and not crucial for their assessment. However, the model with pretraining considers words that people highlight more as more important than words that were highlighted less (Welch Two Sample t-test: p < 0.01). This suggests that pretraining already helps the model to learn some differentiation that people appear to consider when making their judgment.
+
+```{r model vs people, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "70%", fig.width=7.5, fig.asp = 0.6}
+
+df_mti_nopre = read_csv(here("analyses","02_main","03_highlighting","data","model_tokenimportance","nopretrain_authorbelief.csv")) %>%
+  rbind(read_csv(here("analyses","02_main","03_highlighting","data","model_tokenimportance","nopretrain_readerperception.csv"))) %>%
+  mutate_at(vars(trial_type), funs(ifelse(.==0, "author_belief", "general_belief"))) %>% 
+  group_by(token) %>%
+  mutate(frq = n()) %>% 
+  mutate(log_frq = log(frq)) %>% 
+  ungroup() %>% 
+  mutate(stopword = token %in% stopwords("english")) %>% 
+  mutate(token_score_abs = abs(token_score)) %>% 
+  # mutate(punctuation = token %in% punct_chars) %>% 
+  filter(str_length(token) > 1)
+
+mti_meanabs_nopre = df_mti_nopre %>% 
+  # filter(trial_type == "general_belief") %>% 
+  group_by(token, log_frq, stopword) %>% 
+  # summarize(mean_ts = mean(token_score_abs)) %>%
+  summarize(mean_ts = mean(token_score)) %>%
+  ungroup() %>% 
+  mutate(best_word = str_detect(token, best_words) & !str_detect(token, "#")) %>% 
+  mutate(emp_best_word = str_detect(token, emp_best_words) & !str_detect(token, "#"))
+    
+nostopw_nopre = mti_meanabs_nopre %>%
+  filter(!stopword) %>% 
+  select(token, mean_ts) %>% 
+  rename("mean_ts_nopre" = "mean_ts")
+
+nostopw_pre = nostopw %>%
+  select(token, mean_ts) %>% 
+  rename("mean_ts_pre" = "mean_ts")
+
+
+mod_emp = nostopw_people %>% 
+  left_join(nostopw_pre, by=c("value"="token")) %>% 
+  left_join(nostopw_nopre, by=c("value"="token")) %>% 
+  mutate(above_baseline = prop > 0.1488)
+
+# mod_emp = summary_highl %>% 
+#   left_join(mti_meanabs, by=c("value"="token"))
+
+# 4) The model also puts more importance on words that receive above baseline highlights in the empirical highlighting data
+modvspeople = mod_emp %>% 
+  mutate(abs_ts_pre = abs(mean_ts_pre)) %>% 
+  mutate(abs_ts_nopre = abs(mean_ts_nopre)) %>% 
+  filter(total_count > 25 & !is.na(total_count)) %>% 
+  filter(!(is.na(prop) | is.na(abs_ts_pre))) %>% 
+  filter(!(is.na(prop) | is.na(abs_ts_nopre))) %>% 
+  gather(model, importance_val, abs_ts_pre, abs_ts_nopre) %>% 
+  mutate_at(vars(model), funs(ifelse(.=="abs_ts_nopre", "no pretraining", "with pretraining")))
+
+modvspeople %>%
+  ggplot(., aes(x=model, y=importance_val, fill=above_baseline)) +
+    stat_summary(fun = mean,
+                 geom = "bar",
+                 width = 0.7,
+                 position = position_dodge(0.7),
+                 color="black") +
+    stat_summary(fun.data = mean_cl_boot,
+                 geom = "errorbar",
+                 width = 0.3,
+                 position = position_dodge(0.7)) +
+    theme(legend.position = "top") +
+    ylab("Mean token importance\n(model)") +
+    xlab("Model") +
+    scale_fill_manual(name = "Token highlights\n(empirical)",
+                       labels = c("FALSE" = "below chance",
+                                  "TRUE" = "above chance"),
+                       values = c("#009292", "#004949"))
+
+# t.test(filter(modvspeople, above_baseline)$abs_ts, filter(modvspeople, !above_baseline)$abs_ts, paired = FALSE, var.equal = FALSE, conf.level = 0.95)
+
+```
+
+Beyond this, however, there is little correlation between the absolute attribution score for each word and its highlighting proportion (r = 0.07 for the model with pretraining and r = 0.02 for the model without pretraining). Given the strong frequency artifacts in the empirical highlighting data, this correlation is computed using the proportion of highlights, i.e., how often a word was highlighted given the total number of occurrences.
+
+```{r correlation model people, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE, out.width = "50%", fig.width=6, fig.asp = 0.618}
+
+modvspeople %>% 
+  ggplot(., aes(x=importance_val, y=prop)) +
+    facet_wrap(~model) +
+    geom_point(alpha=0.2, color="darkgrey") +
+    theme(strip.background = element_rect(fill="white")) +
+    xlab("Mean token importance\n(model)") +
+    ylab("Token highlights\n(empirical; proportion)")
+
+modvspeople %>% 
+  ggplot(., aes(x=importance_val, y=highl_count)) +
+    facet_wrap(~model) +
+    geom_point(alpha=0.2, color="darkgrey") +
+    theme(strip.background = element_rect(fill="white")) +
+    xlab("Mean token importance\n(model)") +
+    ylab("Token highlights\n(empirical; absolute)")
+
+# # r = -0.065
+# cor(filter(modvspeople, model=="no pretraining")$highl_count,
+#     filter(modvspeople, model=="no pretraining")$importance_val,
+#     use="complete.obs")
+# # r = -0.072
+# cor(filter(modvspeople, model=="with pretraining")$highl_count,
+#     filter(modvspeople, model=="with pretraining")$importance_val,
+#     use="complete.obs")
+
+# # r = 0.015
+# cor(filter(modvspeople, model=="no pretraining")$prop, 
+#     filter(modvspeople, model=="no pretraining")$importance_val, 
+#     use="complete.obs")
+# # r = 0.067
+# cor(filter(modvspeople, model=="with pretraining")$prop, 
+#     filter(modvspeople, model=="with pretraining")$importance_val, 
+#     use="complete.obs")
+
+```
+
+
+
+
+
+
+
+
+
+
+<!-- # Left over -->
+
+<!-- ```{r model token importance nonpretrained, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE} -->
+
+<!-- library(tm) -->
+
+<!-- punct_chars = c(".", ",", "!", ":", "/", "|", "'", '"', "\\", "_", "-") -->
+
+<!-- df_mti_nopre = read_csv(here("data","model_tokenimportance","uncased0.csv")) %>% -->
+<!--   rbind(read_csv(here("data","model_tokenimportance","uncased1.csv"))) %>% -->
+<!--   mutate_at(vars(trial_type), funs(ifelse(.==0, "author_belief", "general_belief"))) %>%  -->
+<!--   group_by(token) %>% -->
+<!--   mutate(frq = n()) %>%  -->
+<!--   mutate(log_frq = log(frq)) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   mutate(stopword = token %in% stopwords("english")) %>%  -->
+<!--   mutate(token_score_abs = abs(token_score)) %>%  -->
+<!--   mutate(punctuation = token %in% punct_chars) %>%  -->
+<!--   mutate(spec_char = ifelse(punctuation | stopword, T, F)) -->
+
+<!-- mti_meanabs_nopre = df_mti_nopre %>%  -->
+<!--   group_by(token, log_frq, spec_char, trial_type) %>%  -->
+<!--   # summarize(mean_ts = mean(token_score_abs)) %>% -->
+<!--   summarize(mean_ts = mean(token_score)) %>% -->
+<!--   ungroup() -->
+
+<!-- nostopw_nopre = mti_meanabs_nopre %>% -->
+<!--   filter(!spec_char) -->
+
+<!-- # 1) This one -->
+<!-- nostopw_nopre %>%  -->
+<!--   mutate(mean_logfrq = mean(log_frq)) %>% -->
+<!--   # filter(log_frq > mean_logfrq) %>% -->
+<!--   filter(log_frq > 4.5) %>% -->
+<!--   # filter(log_frq > 6) %>% -->
+<!--   ggplot(., aes(x=log_frq, y=mean_ts, label=token)) + -->
+<!--     # facet_wrap(~trial_type) + -->
+<!--     geom_point(alpha=0.2) + -->
+<!--     # geom_text( -->
+<!--     #           # data=filter(nostopw, str_detect(token, best_model_words) & -->
+<!--     #           #               !str_detect(token, "#") & log_frq > 4.5), -->
+<!--     #           # aes(x=log_frq, y=mean_ts, label=token), -->
+<!--     #           aes(label=token), -->
+<!--     #           color="lightgrey", -->
+<!--     #           hjust=0,  -->
+<!--     #           vjust=0) + -->
+<!--     geom_text( -->
+<!--               data=filter(nostopw, str_detect(token, best_model_words) & -->
+<!--                             !str_detect(token, "#") & log_frq > 4.5), -->
+<!--               aes(x=log_frq, y=mean_ts, label=token), -->
+<!--               hjust=0,  -->
+<!--               vjust=0) + -->
+<!--     scale_color_manual(values = c("#a6a6a6", "#ff7f7f")) + -->
+<!--     theme(legend.position = "none") + -->
+<!--     xlab("Token frequency (log)") + -->
+<!--     ylab("Mean token importance") + -->
+<!--     xlim(c(4.5,10.7)) -->
+<!--     # geom_text(aes(label=token),hjust=0, vjust=0) -->
+
+<!-- nostopw_nopre %>%  -->
+<!--   mutate(mean_logfrq = mean(log_frq)) %>%  -->
+<!--   filter(log_frq > mean_logfrq) %>%  -->
+<!--   ggplot(., aes(x=log_frq, y=mean_ts, label=token)) + -->
+<!--     facet_wrap(~trial_type) + -->
+<!--     geom_point() + -->
+<!--     geom_text(aes(label=token),hjust=0, vjust=0) -->
+
+<!-- ``` -->
+
+<!-- ```{r sdlkfjlsdk, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE} -->
+<!-- model_comparison = mti_meanabs %>%  -->
+<!--   rename(ts_pre = "mean_ts") %>%  -->
+<!--   left_join(mti_meanabs_nopre) %>%  -->
+<!--   rename(ts_nopre = "mean_ts") -->
+
+<!-- ggplot(model_comparison, aes(x=ts_nopre, y=ts_pre, color=log_frq, label=token)) + -->
+<!--   facet_wrap(~trial_type) + -->
+<!--   geom_point() + -->
+<!--   geom_text(aes(label=token),hjust=0, vjust=0) + -->
+<!--   geom_abline(slope=1) + -->
+<!--   geom_hline(yintercept=0) + -->
+<!--   geom_vline(xintercept=0) -->
+
+<!-- model_comparison %>%  -->
+<!--   mutate(ts_diff = ts_pre - ts_nopre) %>%  -->
+<!--   ggplot(., aes(x=log_frq, y=ts_diff, label=token)) + -->
+<!--     facet_wrap(~trial_type) + -->
+<!--     geom_point() + -->
+<!--     geom_text(aes(label=token),hjust=0, vjust=0) -->
+<!-- ``` -->
+
+<!-- ```{r eval=FALSE, include=FALSE} -->
+<!-- summary_highl %>%  -->
+<!--   arrange(-prop) %>%  -->
+<!--   # filter(total_count > 50) %>%  -->
+<!--   head(n=30) %>%  -->
+<!--   ggplot(., aes(x=reorder(value, -prop), y=prop)) + -->
+<!--       geom_bar(stat="identity", -->
+<!--                fill=col_unified) + -->
+<!--       theme(axis.text.x = element_text(angle = 30, hjust=1)) + -->
+<!--       ylab("Proportion of highlights") + -->
+<!--       xlab("Most highlighted words (overall)") -->
+
+<!-- best_words_df = summary_highl %>%  -->
+<!--   group_by(value) %>%  -->
+<!--   summarize(highl_count = sum(highl_count)) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   arrange(-highl_count) %>%  -->
+<!--   head(n=30) -->
+
+<!-- best_words = str_c("\\b(", str_c(best_words_df$value, collapse = "|"), ")\\b") -->
+
+<!-- summary_highl %>%  -->
+<!--   # group_by(value) %>%  -->
+<!--   # summarize(highl_count = sum(highl_count)) %>%  -->
+<!--   # ungroup() %>%  -->
+<!--   filter(highl_count > 30) %>%  -->
+<!--   arrange(-prop) %>%  -->
+<!--   head(n=30) %>%  -->
+<!--   ggplot(., aes(x=reorder(value, -prop), y=prop)) + -->
+<!--       geom_bar(stat="identity", -->
+<!--                fill=col_unified) + -->
+<!--       theme(axis.text.x = element_text(angle = 30, hjust=1)) + -->
+<!--       ylab("Proportion of highlights") + -->
+<!--       xlab("Most highlighted words (overall)") -->
+
+<!-- # extract_mostcommon(all_highlighted_words) %>%  -->
+<!-- #     head(n=30) %>%  -->
+<!-- #     ggplot(., aes(x=reorder(value, -proportion), y=proportion)) + -->
+<!-- #       geom_bar(stat="identity", -->
+<!-- #                fill=col_unified) + -->
+<!-- #       theme(axis.text.x = element_text(angle = 30, hjust=1)) + -->
+<!-- #       scale_y_continuous(labels = scales::percent_format()) + -->
+<!-- #       ylab("Proportion of highlights") + -->
+<!-- #       xlab("Most highlighted words (overall)") -->
+
+<!-- authorbelief_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Author belief",]$selected_words, collapse = "") -->
+<!-- committedCrime_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Reader perception",]$selected_words, collapse = "") -->
+<!-- all_questions = extract_mostcommon(authorbelief_highl_words) %>%  -->
+<!--   rename(authorbelief_count = count) %>%  -->
+<!--   select(-proportion) %>%  -->
+<!--   left_join(extract_mostcommon(committedCrime_highl_words)) %>%  -->
+<!--   rename(committedCrime_count = count) %>%  -->
+<!--   select(-proportion) -->
+
+<!-- summary_highl = all_words %>%  -->
+<!--   left_join(all_questions) %>%  -->
+<!--   gather(trial_type, highl_count, authorbelief_count, committedCrime_count) %>%  -->
+<!--   mutate(prop = highl_count/total_count) %>%  -->
+<!--   mutate(hedge = str_detect(value, hedges_lexicon)) -->
+
+<!-- summary_highl %>%  -->
+<!--   # filter(total_count > 100) %>%  -->
+<!-- ggplot(., aes(x=log_frq,y=prop, label=value)) + -->
+<!--   geom_point() + -->
+<!--   geom_text(aes(label=value),hjust=0, vjust=0) -->
+<!--   # xlim(c(0,1000)) -->
+
+<!-- cor(summary_highl$highl_count, summary_highl$total_count, use="complete.obs") -->
+
+<!-- # plot 1 and 3 -->
+<!-- summary_highl %>%  -->
+<!--   # filter(hedge) %>%  -->
+<!--   # mutate(log_frq = log(total_count)) %>%  -->
+<!--   filter(total_count > 20) %>%  -->
+<!--   ggplot(., aes(x=log_frq, y=prop, label=value)) + -->
+<!--   # ggplot(., aes(x=total_count, y=highl_count, label=value)) + -->
+<!--     # facet_wrap(~trial_type) + -->
+<!--     geom_point() + -->
+<!--     geom_text(aes(label=value),hjust=0, vjust=0) -->
+
+<!-- cor(summary_highl$log_frq, summary_highl$prop, use="complete.obs") -->
+
+<!-- library(data.table) -->
+
+<!-- nopunct = df_viz %>%  -->
+<!--   # head(n=3) %>%  -->
+<!--   mutate(story_nopunct = str_replace_all(story_clean, "[[:punct:]]", "")) -->
+<!-- s <- paste(nopunct$story_nopunct, collapse = ' ') -->
+<!-- # ss <- data.frame(x=unlist(str_split(s, " "))) -->
+<!-- ss <- data.frame(x=strsplit(s, "[[:space:]]+")[[1]]) -->
+<!-- wordcount <- setDT(ss)[, .(freq = .N), x] -->
+
+<!-- view(wordcount) -->
+
+<!-- highl_freqprop = extract_mostcommon(all_highlighted_words) %>%  -->
+<!--   left_join(wordcount, by=c("value"="x")) -->
+
+<!-- highl_freqprop %>%  -->
+<!--   ggplot(., aes(x=freq, y=count, label=value)) + -->
+<!--     geom_point() + -->
+<!--     geom_smooth(method="lm") + -->
+<!--     geom_text(aes(label=value),hjust=0, vjust=0) + -->
+<!--     xlim(c(0,15000)) + -->
+<!--     ylim(c(0,4000)) -->
+
+<!-- highl_freqprop %>%  -->
+<!--   mutate(cfprop = count/freq) %>%  -->
+<!--   arrange(-count) %>%  -->
+<!--   head(n=500) %>%  -->
+<!--   arrange(-cfprop) %>%  -->
+<!--   head(n=30) %>%  -->
+<!--   ggplot(., aes(x=reorder(value, -cfprop), y=cfprop)) + -->
+<!--     geom_bar(stat="identity") + -->
+<!--     theme(axis.text.x = element_text(angle=45, hjust=1)) -->
+
+<!-- fullfreq = highl_freqprop %>%  -->
+<!--   mutate(cfprop = count/freq) %>%  -->
+<!--   arrange(-cfprop) %>%  -->
+<!--   head(n=300) %>%  -->
+<!--   mutate(full_freq = str_count(s, value)) -->
+
+<!-- view(fullfreq) -->
+
+<!-- # between questions -->
+<!-- authorbelief_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Author belief",]$selected_words, collapse = "") -->
+<!-- committedCrime_highl_words = paste(df_highlighted[df_highlighted$trial_type=="Reader perception",]$selected_words, collapse = "") -->
+<!-- all_questions = extract_mostcommon(authorbelief_highl_words) %>%  -->
+<!--   rename(authorbelief_count = count) %>%  -->
+<!--   select(-proportion) %>%  -->
+<!--   left_join(extract_mostcommon(committedCrime_highl_words)) %>%  -->
+<!--   rename(committedCrime_count = count) %>%  -->
+<!--   select(-proportion) -->
+
+<!-- all_questions %>%  -->
+<!--   ggplot(., aes(x=authorbelief_count, y=committedCrime_count, label=value)) + -->
+<!--   geom_point() + -->
+<!--   geom_abline(slope=1) + -->
+<!--   geom_text(aes(label=value),hjust=0, vjust=0) + -->
+<!--   xlim(0,6000) + -->
+<!--   ylim(0,6000) -->
+
+<!-- # most Author belief -->
+<!-- all_questions %>%  -->
+<!--   mutate(diff = authorbelief_count - committedCrime_count) %>%  -->
+<!--   arrange(-diff) %>%  -->
+<!--   head(n=30) %>%  -->
+<!--   ggplot(., aes(x=reorder(value,-diff), y=diff)) + -->
+<!--     geom_point() + -->
+<!--     theme(axis.text.x = element_text(angle=45, hjust=1)) -->
+
+<!-- # most Reader perception -->
+<!-- all_questions %>%  -->
+<!--   mutate(diff = authorbelief_count - committedCrime_count) %>%  -->
+<!--   arrange(diff) %>%  -->
+<!--   head(n=30) %>%  -->
+<!--   ggplot(., aes(x=reorder(value,diff), y=diff)) + -->
+<!--     geom_point() + -->
+<!--     theme(axis.text.x = element_text(angle=45, hjust=1)) -->
+<!-- ``` -->
+
+
+
+
+
+<!-- ### Corpus for qualitative analyses -->
+
+<!-- 200 datapoints, 171 unique stories -->
+
+<!-- ```{r qual corpus, eval=FALSE, include=FALSE} -->
+
+<!-- df_qualstories = df_hedges %>%  -->
+<!--   group_by(trial_type, story_id, story_clean, hedges_totalcount) %>%  -->
+<!--   summarize(mean_slider_val = mean(slider_val), -->
+<!--             annotations = n()) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   filter(annotations > 3, -->
+<!--          hedges_totalcount >= 3) %>%  -->
+<!--   group_by(trial_type) %>%  -->
+<!--   arrange(mean_slider_val) %>%  -->
+<!--   mutate(min_counter = seq(1, n())) %>%  -->
+<!--   arrange(-mean_slider_val) %>%  -->
+<!--   mutate(max_counter = seq(1, n())) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   filter(min_counter <= 50 | max_counter <= 50) %>%  -->
+<!--   mutate(rating = case_when( -->
+<!--     min_counter <= 50 ~ "low", -->
+<!--     TRUE ~ "high" -->
+<!--   )) -->
+
+<!-- df_qualstories %>%  -->
+<!--   mutate(rating = ifelse(min_counter <= 50, "lower", "upper")) %>%  -->
+<!--   ggplot(., aes(x=hedges_totalcount, y=mean_slider_val)) + -->
+<!--     facet_wrap(~trial_type) + -->
+<!--     geom_point() + -->
+<!--     geom_smooth(method="lm") -->
+
+<!-- df_chosen = df_qualstories %>%  -->
+<!--   mutate(chosen = TRUE) %>%  -->
+<!--   select(trial_type, story_id, chosen) -->
+
+<!-- df_hedges %>% -->
+<!--   left_join(df_chosen) %>% -->
+<!--   ggplot(., aes(x=hedges_highlcount, y=slider_val, color=chosen)) + -->
+<!--     facet_wrap(~trial_type) + -->
+<!--     geom_point() + -->
+<!--     geom_smooth(method="lm") + -->
+<!--     theme(legend.position = "top") + -->
+<!--     xlab("Number of highlighted hedges") + -->
+<!--     ylab("Slider rating") -->
+
+<!-- ### -->
+
+<!-- df_filtered = df_qualstories %>% -->
+<!--   select(story_id, story_clean, hedges_totalcount, mean_slider_val, trial_type) %>%  -->
+<!--   mutate(story_markedhedge_orig = str_replace_all(story_clean, hedges_lexicon, "***\\1**")) %>%  -->
+<!--   select(-story_clean) %>%  -->
+<!--   arrange(story_id) %>%  -->
+<!--   mutate(counter = seq(1:n())) %>%  -->
+<!--   mutate(editor = case_when( -->
+<!--     counter <= (n()/3)+1 ~ "Chris", -->
+<!--     counter >= (2*n())/3 ~ "Elisa", -->
+<!--     TRUE ~ "Zijian" -->
+<!--   )) %>%  -->
+<!--   mutate(story_markedhedge_edited = story_markedhedge_orig) -->
+
+<!-- view(df_filtered)   -->
+
+
+
+
+
+<!-- df_filtered = df_hedges %>%  -->
+<!--   group_by(trial_type, story_id, story_clean, hedges_totalcount) %>%  -->
+<!--   summarize(mean_slider_val = mean(slider_val), -->
+<!--             annotations = n()) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   filter(annotations > 3, -->
+<!--          hedges_totalcount > 3) %>%  -->
+<!--   group_by(story_id) %>%  -->
+<!--   mutate(both_trials = n()) %>%  -->
+<!--   ungroup() %>%  -->
+<!--   filter(both_trials == 2, -->
+<!--          trial_type == "Reader perception") %>%  -->
+<!--   view -->
+
+<!-- df_blub = df_filtered[sample(nrow(df_filtered), 200), ] -->
+<!-- chosen_ids = as.list(df_blub['story_id'])$story_id -->
+
+<!-- df_chosen = df_hedges %>%  -->
+<!--   filter(story_id %in% chosen_ids) %>%  -->
+<!--   view -->
+
+<!-- df_chosen %>%  -->
+<!--   ggplot(., aes(x=reorder(story_id, slider_val), y=slider_val, color=trial_type)) + -->
+<!--     geom_point(alpha=0.1) + -->
+<!--     stat_summary(fun.y = "mean",  -->
+<!--                  geom = "point", -->
+<!--                  size = 4) -->
+
+<!-- # df_chosen %>%  -->
+<!-- #   select(story_id, story_clean, hedges_totalcount) %>%  -->
+<!-- #   distinct() %>%  -->
+<!-- #   mutate(story_markedhedge_orig = str_replace_all(story_clean, regex(hedges_lexicon, ignore_case = TRUE), "***\\1**")) %>%  -->
+<!-- #   mutate(story_markedhedge_edited = story_markedhedge_orig) %>%  -->
+<!-- #   mutate(story_markedhedge_removed = story_markedhedge_orig) %>%  -->
+<!-- #   write_csv(., here("filtered_hedges.csv")) -->
+
+<!-- df_viz %>% -->
+<!--   # select(story_id, story, story_clean, headline, slider_val, annotation_id, story_whighl_cleaned, highlighted) %>% -->
+<!--   write_csv(., here("main_ratings.csv")) -->
+
+<!-- df_viz %>%  -->
+<!--   select(story_id, story_clean, headline) %>% -->
+<!--   distinct() %>%  -->
+<!--   write_csv(., here("lookup.csv")) -->
+
+<!-- ``` -->
+
+<!-- ```{r eval=FALSE, include=FALSE} -->
+<!-- df_viz %>%  -->
+<!--   select(story_id, story_clean) %>%  -->
+<!--   distinct() %>%  -->
+<!--   arrange(story_clean) %>%  -->
+<!--   view() -->
+<!-- ``` -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
