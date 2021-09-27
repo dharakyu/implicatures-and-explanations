@@ -13,7 +13,8 @@
 
         <!-- js dependencies -->
         <script src="libraries/mustache/mustache.min.js"></script>
-        <script src="libraries/jquery/dist/jquery.min.js"></script>
+        <!---<script src="libraries/jquery/dist/jquery.min.js"></script>-->
+        <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
         <!-- This doesn't seem to be there on cloudflare -->
         <script src="libraries/csv-js/csv.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.5/lodash.js"></script>
@@ -31,6 +32,8 @@
         <!-- local trial_info files -->
         <script src="trial_info/main_trials.js"></script>
         <script src="trial_info/stories.js"></script>
+
+        <script src="trial_info/stimuli.js"></script>
 
         <!-- views -->
         <script src="views/views.js"></script>
@@ -217,7 +220,7 @@
                 </p>
                 <p class="text" id="highlight_instruction" style="display: none;">
                     <br>
-                    Now please <strong>highlight</strong> in the text why you gave your response. If you're not happy with your selection, click on the ERASE button and start again.
+                    Now please the words or phrases in the text that most influenced your decision (note that you cannot highlight bolded text). If you're not happy with your selection, click on the ERASE button and start again.
                     <br>
                 </p>
                 <p id="slider_box" class="answer-container blend-out">

@@ -8,9 +8,9 @@ var main_trials = [
 	// },
 	{
 		question_id: "suspect_committedCrime",
-		question: "How likely is it that the main suspect is / the main suspects are <strong>guilty</strong>?",
-		slider_left: "very unlikely",
-		slider_right: "very likely"
+		question: "How similar is Option 1 (with 'but not all') to Option 2 (without 'but not all')?",
+		slider_left: "very different meaning",
+		slider_right: "same meaning"
 	},
 	// {
 	// 	question_id: "suspect_conviction",
@@ -25,12 +25,12 @@ var main_trials = [
 	// 	// at all
 	// 	slider_right: "very justified"
 	// }, 
-	{
-		question_id: "author_belief",
-		question: "How much does the <strong>author</strong> believe that the main suspect is / the main suspects are <strong>guilty</strong>?",
-		slider_left: "not at all",
-		slider_right: "very much"
-	},
+	//{
+	//	question_id: "author_belief",
+	//	question: "How much does the <strong>author</strong> believe that the main suspect is / the main suspects are <strong>guilty</strong>?",
+	//	slider_left: "not at all",
+	//	slider_right: "very much"
+	//},
 	// Strong correlation with info_reliability
 	// {
 	// 	question_id: "author_trust",
@@ -50,6 +50,7 @@ var main_trials = [
 	// 	slider_left: "not affected",
 	// 	slider_right: "very affected"
 	// },
+	/*
 	_.shuffle([{
 		question_id: "control1_false",
 		question: "How likely is it that this story is a <strong>Greek fairy tale</strong>?",
@@ -68,5 +69,6 @@ var main_trials = [
 		slider_left: "very unlikely",
 		slider_right: "very likely"
 	}])[0]
+	*/
 ];
 

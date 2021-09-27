@@ -4,7 +4,7 @@ exp.customize = function() {
     this.global_data.startDate = Date();
     this.global_data.startTime = Date.now();
     // specify view order
-    this.views_seq = [
+    /*this.views_seq = [
         botcaptcha,
         intro,
         beginMainExp,
@@ -20,6 +20,8 @@ exp.customize = function() {
         postTest,
         thanks
     ];
+    */
+    this.views_seq = [botcaptcha, intro, beginMainExp, main, postTest, thanks]
 
     // prepare information about trials (procedure)
     // randomize main trial order, but keep practice trial order fixed
@@ -32,18 +34,24 @@ exp.customize = function() {
     // select the first two
     var story_blocks = _.flatten(shuffled_blocks.slice(0,2));
     // sample 5 stories randomly
-    this.trial_info.stories = _.shuffle(story_blocks).slice(0,5);
+    // this.trial_info.stories = _.shuffle(story_blocks).slice(0,5);
 
-    console.log(selected_blocks);
+    this.trial_info.examples = all_stims;
 
-    console.log("this.trial_info.stories");
-    console.log(this.trial_info.stories);
+    // console.log(selected_blocks);
+
+    // console.log("this.trial_info.stories");
+    // console.log(this.trial_info.stories);
+
+    console.log("this.trial_info.examples");
+    console.log(this.trial_info.examples);
 
     this.trial_info.story_id = 0;
 
     // adds progress bars to the views listed
     // view's name is the same as object's name
-    this.progress_bar_in = ["beginMainExp", "main", "main2", "main3", "main4", "main5", "main6", "main7", "main8", "main9", "main10"];
+    // this.progress_bar_in = ["beginMainExp", "main", "main2", "main3", "main4", "main5", "main6", "main7", "main8", "main9", "main10"];
+    this.progress_bar_in = ['beginMainExp', 'main']
     // this.progress_bar_in = ['practice', 'main'];
     // styles: chunks, separate or default
     this.progress_bar_style = "default";

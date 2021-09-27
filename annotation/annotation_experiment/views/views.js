@@ -138,7 +138,7 @@ var beginMainExp = {
     title: "Read the Story",
     // introduction text
     text:
-        "Please, read the following text. When you're done, press <strong>Next</strong> to show the first question.",
+        "Please read the following conversation snippet. When you're done, press <strong>Next</strong> to show the first question.",
     // introduction's slide proceeding button text
     // buttonText: "Next",
     // render function renders the view
@@ -149,7 +149,10 @@ var beginMainExp = {
             Mustache.render(viewTemplate, {
                 title: this.title,
                 text: this.text,
-                story_text: exp.trial_info.stories[exp.trial_info.story_id].story
+                // story_text: exp.trial_info.stories[exp.trial_info.story_id].story
+                story_text: exp.trial_info.examples[exp.trial_info.story_id].Context,
+                sentence: exp.trial_info.examples[exp.trial_info.story_id].EntireSentence,
+                butnotall_sentence: exp.trial_info.examples[exp.trial_info.story_id].ButNotAllSentence
             })
         );
 
@@ -171,25 +174,34 @@ var main = {
         // fill variables in view-template
         var viewTemplate = $("#main-view").html();
 
-        var current_story = exp.trial_info.stories[exp.trial_info.story_id - 1];
+        //var current_story = exp.trial_info.stories[exp.trial_info.story_id - 1];
+        var current_example = exp.trial_info.examples[exp.trial_info.story_id - 1];
+
+        console.log(CT)
+        console.log(exp.trial_info)
 
         $("#main").html(
             Mustache.render(viewTemplate, {
                 title: this.title,
                 text: this.text,
-                story_text: current_story.story,
-                question: exp.trial_info.main_trials[CT].question,
-                slider_left: exp.trial_info.main_trials[CT].slider_left,
-                slider_right: exp.trial_info.main_trials[CT].slider_right,
+                //story_text: current_story.story,
+                story_text: current_example.Context,
+                // question: exp.trial_info.main_trials[CT].question,
+                // slider_left: exp.trial_info.main_trials[CT].slider_left,
+                // slider_right: exp.trial_info.main_trials[CT].slider_right,
+
+                question: exp.trial_info.main_trials[0].question,
+                slider_left: exp.trial_info.main_trials[0].slider_left,
+                slider_right: exp.trial_info.main_trials[0].slider_right,
             })
         );
 
         $(".comment-sect-voluntary").css({"display": "block"});
 
-        if (exp.trial_info.main_trials[CT].question_id == "suspect_conviction") {
-            $("#checkbox_box").css({"visibility": "hidden"});
-            $("#conviction_question").css({"display": "block"});
-        }
+        //if (exp.trial_info.main_trials[CT].question_id == "suspect_conviction") {
+        //    $("#checkbox_box").css({"visibility": "hidden"});
+        //    $("#conviction_question").css({"display": "block"});
+        //}
 
         var slider = $('#slider');
         var slider_changed = false;
@@ -351,15 +363,16 @@ var main = {
                 var RT = Date.now() - startingTime; // measure RT before anything else
                 var trial_data = {
                     story_id: exp.trial_info.story_id,
-                    trial_type: exp.trial_info.main_trials[CT].question_id,
-                    trial_number: CT + 1,
-                    headline: current_story.headline,
-                    story: current_story.story,
+                    // trial_type: exp.trial_info.main_trials[CT].question_id,
+                    // trial_number: CT + 1,
+                    // headline: current_story.headline,
+                    //story: current_story.story,
+                    story: current_example.Context,
                     highlighted: highlighted_text,
                     story_whighl: $("#story_text")[0].outerHTML,
-                    question: exp.trial_info.main_trials[CT].question,
-                    slider_left: exp.trial_info.main_trials[CT].slider_left,
-                    slider_right: exp.trial_info.main_trials[CT].slider_right,
+                    // question: exp.trial_info.main_trials[CT].question,
+                    // slider_left: exp.trial_info.main_trials[CT].slider_left,
+                    // slider_right: exp.trial_info.main_trials[CT].slider_right,
                     slider_val: $('#slider').val(),
                     box_checked: $('#checkbox').prop('checked'),
                     // convbox_val: conv_var,
@@ -378,9 +391,10 @@ var main = {
         // record trial starting time
         var startingTime = Date.now();
     },
-    trials: 3
+    trials: 1
 };
 
+/*
 var main2 = {
     name: "main2",
     title: "Questions",
@@ -1356,7 +1370,7 @@ var main10 = {
     },
     trials: 3
 };
-
+*/
 
 var postTest = {
     name: "postTest",
