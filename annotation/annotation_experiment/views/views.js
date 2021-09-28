@@ -4,14 +4,14 @@ var botcaptcha = {
     buttonText: 'Let\'s go!',
     render: function () {
       var viewTemplate = $('#botcaptcha-view').html();
-  
+
       // define possible speaker and listener names
       // fun fact: 10 most popular names for boys and girls
       var speaker = _.shuffle(['James', 'John', 'Robert', 'Michael', 'William', 'David', 'Richard', 'Joseph', 'Thomas', 'Charles'])[0];
       var listener = _.shuffle(['Mary', 'Patricia', 'Jennifer', 'Linda', 'Elizabeth', 'Barbara', 'Susan', 'Jessica', 'Sarah', 'Margaret'])[0];
-  
+
       var story = speaker + ' says to ' + listener + ': \'It\'s a beautiful day, isn\'t it?\''
-  
+
       $('#main').html(
         Mustache.render(viewTemplate, {
           name: this.name,
@@ -21,31 +21,31 @@ var botcaptcha = {
           button: this.buttonText
         })
       );
-  
+
       // don't allow enter press in text field
       $('#listener-response').keypress(function (event) {
         if (event.keyCode === 13) {
           event.preventDefault()
         }
       });
-  
+
       // don't show any error message
       $('#error').hide();
       $('#error_incorrect').hide();
       $('#error_2more').hide();
       $('#error_1more').hide();
-  
+
       // amount of trials to enter correct response
       var trial = 0;
-  
+
       $('#next').on('click', function () {
         var response = $('#listener-response').val().replace(' ', '');
-  
+
         // response correct
         if (listener.toLowerCase() === response.toLowerCase()) {
           exp.global_data.botresponse = $('#listener-response').val();
           exp.findNextView();
-  
+
           // response false
         } else {
           trial = trial + 1;
@@ -175,10 +175,9 @@ var main = {
         var viewTemplate = $("#main-view").html();
 
         //var current_story = exp.trial_info.stories[exp.trial_info.story_id - 1];
-        var current_example = exp.trial_info.examples[exp.trial_info.story_id - 1];
+        var current_example = exp.trial_info.examples[CT];
 
         console.log(CT)
-        console.log(exp.trial_info)
 
         $("#main").html(
             Mustache.render(viewTemplate, {
@@ -190,6 +189,8 @@ var main = {
                 // slider_left: exp.trial_info.main_trials[CT].slider_left,
                 // slider_right: exp.trial_info.main_trials[CT].slider_right,
 
+                sentence: current_example.EntireSentence,
+                butnotall_sentence: current_example.ButNotAllSentence,
                 question: exp.trial_info.main_trials[0].question,
                 slider_left: exp.trial_info.main_trials[0].slider_left,
                 slider_right: exp.trial_info.main_trials[0].slider_right,
@@ -237,14 +238,14 @@ var main = {
         var highl_textid = [];
 
         var parentContainerId = "textDescription";
-		
+
         if(!window.CurrentSelection){
             console.log("!window.CurrentSelection")
             CurrentSelection = {};
         };
-        
+
         CurrentSelection.Selector = {};
-        
+
         // get the current selection
         CurrentSelection.Selector.getSelected = function(){
             console.log("selector gets selected");
@@ -266,25 +267,25 @@ var main = {
             }
             return sel;
         };
-        
+
         // function to be called on mouseup
         CurrentSelection.Selector.mouseup = function() {
-            
+
             console.log("mouseup function activated");
             var st = CurrentSelection.Selector.getSelected();
             if(document.selection && !window.getSelection) {
                 // console.log("document.selection && !window.getSelection; range.pasteHTML('<span class='selectedText'>' + range.htmlText + '</span>');");
                 // var range = st;
-                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");			
+                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");
             }
             else if (highlighting_activated) {
                 console.log("NOT document.selection && !window.getSelection")
-                
-                var range = st.getRangeAt(0); 
+
+                var range = st.getRangeAt(0);
                 var newNode = document.createElement("span");
                 newNode.setAttribute("class", "selectedText");
                 range.surroundContents(newNode);
-                                
+
                 //
                 var getTitle = newNode.innerHTML;
                 newNode.setAttribute("title", getTitle);
@@ -295,32 +296,32 @@ var main = {
                 }
                 console.log("newNode");
                 console.log(newNode);
-                //Remove Selection: To avoid extra text selection in IE  
+                //Remove Selection: To avoid extra text selection in IE
                 if (window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
-                else if (document.selection){ 
+                else if (document.selection){
                     document.selection.empty();
                 }
                 //
             }
         }
-            
+
         $(function(){
 
             // $("#"+parentContainerId).on('mouseup', function(){
                 // $('span.selectedText').contents().unwrap();
-                // $(this).find('span.popDiv').remove();			
+                // $(this).find('span.popDiv').remove();
             // });
 
-            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);	
+            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);
         })
 
         $("#erase").on("click", function() {
             highlighted_text = [];
             $('span.selectedText').contents().unwrap();
         });
-        
+
         // END HIGHLIGHTING
 
         $("#submit_response").on("click", function() {
@@ -362,7 +363,7 @@ var main = {
                 console.log(highlighted_text);
                 var RT = Date.now() - startingTime; // measure RT before anything else
                 var trial_data = {
-                    story_id: exp.trial_info.story_id,
+                    //story_id: exp.trial_info.story_id,
                     // trial_type: exp.trial_info.main_trials[CT].question_id,
                     // trial_number: CT + 1,
                     // headline: current_story.headline,
@@ -382,7 +383,7 @@ var main = {
                 // exp.global_data.story_comments = $("#story_comments").val();
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
-            } else {  
+            } else {
                 console.log("error_highlight");
                 $("#error_highlight").css({"display": "block"});
             };
@@ -391,7 +392,8 @@ var main = {
         // record trial starting time
         var startingTime = Date.now();
     },
-    trials: 1
+    trials: all_stims.length,
+    data: all_stims
 };
 
 /*
@@ -457,14 +459,14 @@ var main2 = {
         var highl_textid = [];
 
         var parentContainerId = "textDescription";
-		
+
         if(!window.CurrentSelection){
             console.log("!window.CurrentSelection")
             CurrentSelection = {};
         };
-        
+
         CurrentSelection.Selector = {};
-        
+
         // get the current selection
         CurrentSelection.Selector.getSelected = function(){
             console.log("selector gets selected");
@@ -486,25 +488,25 @@ var main2 = {
             }
             return sel;
         };
-        
+
         // function to be called on mouseup
         CurrentSelection.Selector.mouseup = function() {
-            
+
             console.log("mouseup function activated");
             var st = CurrentSelection.Selector.getSelected();
             if(document.selection && !window.getSelection) {
                 // console.log("document.selection && !window.getSelection; range.pasteHTML('<span class='selectedText'>' + range.htmlText + '</span>');");
                 // var range = st;
-                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");			
+                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");
             }
             else if (highlighting_activated) {
                 console.log("NOT document.selection && !window.getSelection")
-                
-                var range = st.getRangeAt(0); 
+
+                var range = st.getRangeAt(0);
                 var newNode = document.createElement("span");
                 newNode.setAttribute("class", "selectedText");
                 range.surroundContents(newNode);
-                                
+
                 //
                 var getTitle = newNode.innerHTML;
                 newNode.setAttribute("title", getTitle);
@@ -515,32 +517,32 @@ var main2 = {
                 }
                 console.log("newNode");
                 console.log(newNode);
-                //Remove Selection: To avoid extra text selection in IE  
+                //Remove Selection: To avoid extra text selection in IE
                 if (window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
-                else if (document.selection){ 
+                else if (document.selection){
                     document.selection.empty();
                 }
                 //
             }
         }
-            
+
         $(function(){
 
             // $("#"+parentContainerId).on('mouseup', function(){
                 // $('span.selectedText').contents().unwrap();
-                // $(this).find('span.popDiv').remove();			
+                // $(this).find('span.popDiv').remove();
             // });
 
-            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);	
+            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);
         })
 
         $("#erase").on("click", function() {
             highlighted_text = [];
             $('span.selectedText').contents().unwrap();
         });
-        
+
         // END HIGHLIGHTING
 
         $("#submit_response").on("click", function() {
@@ -601,7 +603,7 @@ var main2 = {
                 // exp.global_data.story_comments = $("#story_comments").val();
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
-            } else {  
+            } else {
                 console.log("error_highlight");
                 $("#error_highlight").css({"display": "block"});
             };
@@ -675,14 +677,14 @@ var main3 = {
         var highl_textid = [];
 
         var parentContainerId = "textDescription";
-		
+
         if(!window.CurrentSelection){
             console.log("!window.CurrentSelection")
             CurrentSelection = {};
         };
-        
+
         CurrentSelection.Selector = {};
-        
+
         // get the current selection
         CurrentSelection.Selector.getSelected = function(){
             console.log("selector gets selected");
@@ -704,25 +706,25 @@ var main3 = {
             }
             return sel;
         };
-        
+
         // function to be called on mouseup
         CurrentSelection.Selector.mouseup = function() {
-            
+
             console.log("mouseup function activated");
             var st = CurrentSelection.Selector.getSelected();
             if(document.selection && !window.getSelection) {
                 // console.log("document.selection && !window.getSelection; range.pasteHTML('<span class='selectedText'>' + range.htmlText + '</span>');");
                 // var range = st;
-                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");			
+                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");
             }
             else if (highlighting_activated) {
                 console.log("NOT document.selection && !window.getSelection")
-                
-                var range = st.getRangeAt(0); 
+
+                var range = st.getRangeAt(0);
                 var newNode = document.createElement("span");
                 newNode.setAttribute("class", "selectedText");
                 range.surroundContents(newNode);
-                                
+
                 //
                 var getTitle = newNode.innerHTML;
                 newNode.setAttribute("title", getTitle);
@@ -733,32 +735,32 @@ var main3 = {
                 }
                 console.log("newNode");
                 console.log(newNode);
-                //Remove Selection: To avoid extra text selection in IE  
+                //Remove Selection: To avoid extra text selection in IE
                 if (window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
-                else if (document.selection){ 
+                else if (document.selection){
                     document.selection.empty();
                 }
                 //
             }
         }
-            
+
         $(function(){
 
             // $("#"+parentContainerId).on('mouseup', function(){
                 // $('span.selectedText').contents().unwrap();
-                // $(this).find('span.popDiv').remove();			
+                // $(this).find('span.popDiv').remove();
             // });
 
-            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);	
+            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);
         })
 
         $("#erase").on("click", function() {
             highlighted_text = [];
             $('span.selectedText').contents().unwrap();
         });
-        
+
         // END HIGHLIGHTING
 
         $("#submit_response").on("click", function() {
@@ -819,7 +821,7 @@ var main3 = {
                 // exp.global_data.story_comments = $("#story_comments").val();
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
-            } else {  
+            } else {
                 console.log("error_highlight");
                 $("#error_highlight").css({"display": "block"});
             };
@@ -893,14 +895,14 @@ var main4 = {
         var highl_textid = [];
 
         var parentContainerId = "textDescription";
-		
+
         if(!window.CurrentSelection){
             console.log("!window.CurrentSelection")
             CurrentSelection = {};
         };
-        
+
         CurrentSelection.Selector = {};
-        
+
         // get the current selection
         CurrentSelection.Selector.getSelected = function(){
             console.log("selector gets selected");
@@ -922,25 +924,25 @@ var main4 = {
             }
             return sel;
         };
-        
+
         // function to be called on mouseup
         CurrentSelection.Selector.mouseup = function() {
-            
+
             console.log("mouseup function activated");
             var st = CurrentSelection.Selector.getSelected();
             if(document.selection && !window.getSelection) {
                 // console.log("document.selection && !window.getSelection; range.pasteHTML('<span class='selectedText'>' + range.htmlText + '</span>');");
                 // var range = st;
-                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");			
+                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");
             }
             else if (highlighting_activated) {
                 console.log("NOT document.selection && !window.getSelection")
-                
-                var range = st.getRangeAt(0); 
+
+                var range = st.getRangeAt(0);
                 var newNode = document.createElement("span");
                 newNode.setAttribute("class", "selectedText");
                 range.surroundContents(newNode);
-                                
+
                 //
                 var getTitle = newNode.innerHTML;
                 newNode.setAttribute("title", getTitle);
@@ -951,32 +953,32 @@ var main4 = {
                 }
                 console.log("newNode");
                 console.log(newNode);
-                //Remove Selection: To avoid extra text selection in IE  
+                //Remove Selection: To avoid extra text selection in IE
                 if (window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
-                else if (document.selection){ 
+                else if (document.selection){
                     document.selection.empty();
                 }
                 //
             }
         }
-            
+
         $(function(){
 
             // $("#"+parentContainerId).on('mouseup', function(){
                 // $('span.selectedText').contents().unwrap();
-                // $(this).find('span.popDiv').remove();			
+                // $(this).find('span.popDiv').remove();
             // });
 
-            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);	
+            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);
         })
 
         $("#erase").on("click", function() {
             highlighted_text = [];
             $('span.selectedText').contents().unwrap();
         });
-        
+
         // END HIGHLIGHTING
 
         $("#submit_response").on("click", function() {
@@ -1037,7 +1039,7 @@ var main4 = {
                 // exp.global_data.story_comments = $("#story_comments").val();
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
-            } else {  
+            } else {
                 console.log("error_highlight");
                 $("#error_highlight").css({"display": "block"});
             };
@@ -1111,14 +1113,14 @@ var main5 = {
         var highl_textid = [];
 
         var parentContainerId = "textDescription";
-		
+
         if(!window.CurrentSelection){
             console.log("!window.CurrentSelection")
             CurrentSelection = {};
         };
-        
+
         CurrentSelection.Selector = {};
-        
+
         // get the current selection
         CurrentSelection.Selector.getSelected = function(){
             console.log("selector gets selected");
@@ -1140,25 +1142,25 @@ var main5 = {
             }
             return sel;
         };
-        
+
         // function to be called on mouseup
         CurrentSelection.Selector.mouseup = function() {
-            
+
             console.log("mouseup function activated");
             var st = CurrentSelection.Selector.getSelected();
             if(document.selection && !window.getSelection) {
                 // console.log("document.selection && !window.getSelection; range.pasteHTML('<span class='selectedText'>' + range.htmlText + '</span>');");
                 // var range = st;
-                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");			
+                // range.pasteHTML("<span class='selectedText'>" + range.htmlText + "</span>");
             }
             else if (highlighting_activated) {
                 console.log("NOT document.selection && !window.getSelection")
-                
-                var range = st.getRangeAt(0); 
+
+                var range = st.getRangeAt(0);
                 var newNode = document.createElement("span");
                 newNode.setAttribute("class", "selectedText");
                 range.surroundContents(newNode);
-                                
+
                 //
                 var getTitle = newNode.innerHTML;
                 newNode.setAttribute("title", getTitle);
@@ -1169,32 +1171,32 @@ var main5 = {
                 }
                 console.log("newNode");
                 console.log(newNode);
-                //Remove Selection: To avoid extra text selection in IE  
+                //Remove Selection: To avoid extra text selection in IE
                 if (window.getSelection) {
                     window.getSelection().removeAllRanges();
                 }
-                else if (document.selection){ 
+                else if (document.selection){
                     document.selection.empty();
                 }
                 //
             }
         }
-            
+
         $(function(){
 
             // $("#"+parentContainerId).on('mouseup', function(){
                 // $('span.selectedText').contents().unwrap();
-                // $(this).find('span.popDiv').remove();			
+                // $(this).find('span.popDiv').remove();
             // });
 
-            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);	
+            $("#"+parentContainerId).bind("mouseup",CurrentSelection.Selector.mouseup);
         })
 
         $("#erase").on("click", function() {
             highlighted_text = [];
             $('span.selectedText').contents().unwrap();
         });
-        
+
         // END HIGHLIGHTING
 
         $("#submit_response").on("click", function() {
@@ -1255,7 +1257,7 @@ var main5 = {
                 // exp.global_data.story_comments = $("#story_comments").val();
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
-            } else {  
+            } else {
                 console.log("error_highlight");
                 $("#error_highlight").css({"display": "block"});
             };
@@ -1360,7 +1362,7 @@ var main10 = {
                 exp.trial_data.push(trial_data);
                 exp.findNextView();
             } else {
-                console.log($("#error2"));    
+                console.log($("#error2"));
                 $("#error2").css({"display": "block"});
             };
         });
