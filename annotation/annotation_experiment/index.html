@@ -222,11 +222,13 @@
                     </section>
                     {{{/ question }}}
                 </p>
+                
                 <p class="text" id="highlight_instruction" style="display: none;">
                     <br>
-                    Now please the words or phrases in the text that most influenced your decision (note that you cannot highlight bolded text). If you're not happy with your selection, click on the ERASE button and start again.
+                    Now please highlight the words or phrases in the text that most influenced your decision (note that you cannot highlight bolded text). If you're not happy with your selection, click on the ERASE button and start again.
                     <br>
                 </p>
+                
                 <p id="slider_box" class="answer-container blend-out">
                     {{# slider_left }}
                     <span class="slider_left">{{slider_left}}</span>
@@ -250,22 +252,41 @@
                 <p id="checkbox_box" class="answer-container">
                     <input type="checkbox" id="checkbox">Doesn't apply.
                 </p>
+                
+                <p class="text" id="explain_instruction" style="display: none;">
+                    <br>
+                    Using the words that you just highlighted, write an explanation for the judgement that you reached.
+                    <br>
+                </p>
+                <p class="comment-sect-voluntary" id="expl-container" style="display: none;">
+                    <textarea name="explanation" id="explanation"
+                    rows="2" cols="60"></textarea>
+                </p>
+                
             </form>
 
             <p id="error_slider" class="help-text" style="display: none; color: #b61515;"><br>You haven't given an answer yet. To answer the question, please adjust the slider accordingly. If you believe that the question can't be applied to the story, click on the "Doesn't apply" box. </p>
 
-            <button id="submit_response">Submit Response</button>
+            <button id="finish_rating">Next</button>
 
-            <p id="error_highlight" class="help-text" style="display: none;color: #b61515;"><br>No highlighting has been registiered yet. Registered highlights will appear in green. If your highlight is only grey, try to click somewhere else and then select it again.</p>
+            
 
-            {{# button }}
+            <p id="error_highlight" class="help-text" style="display: none;color: #b61515;"><br>No highlighting has been registered yet. Registered highlights will appear in green. If your highlight is only grey, try to click somewhere else and then select it again.</p>
+
+            <p id="error_explanation" class="help-text" style="display: none;color: #b61515;"><br>You haven't provided a written explanation for your response.</p>
+
+
+            <!---{{# button }}
             <button id="next" style="display: none;">{{ button }}</button>
-            {{/ button }}
+            {{/ button }}-->
             {{^ button }}
-            <button id="next" style="display: none;">Next</button>
+            <button id="finish_highlight" style="display: none;">Next</button>
             {{/ button }}
 
-            <p class="comment-sect-voluntary" style="display: none;">
+            <button id="finish_explanation" style="display: none;">Submit</button>
+            
+
+            <p class="comment-sect-voluntary" id="story-container" style="display: none;">
                 <label for="story_comments">Optional: Is there something else you would like to add?</label>
                 <textarea name="story_comments" id="story_comments"
                 rows="2" cols="60"></textarea>
