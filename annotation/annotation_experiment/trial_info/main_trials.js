@@ -8,7 +8,7 @@ var main_trials = [
 	// },
 	{
 		question_id: "suspect_committedCrime",
-		question: "How similar is Option 1 (with 'but not all') to Option 2 (without 'but not all')?",
+		question: "How similar is Option 1 (without 'but not all') to Option 2 (with 'but not all')?",
 		slider_left: "very different meaning",
 		slider_right: "same meaning"
 	},
